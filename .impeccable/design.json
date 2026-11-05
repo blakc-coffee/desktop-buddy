@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-05T10:41:20.102Z",
+  "title": "Design System: Desktop Buddy",
+  "extensions": {
+    "breakpoints": [
+      {
+        "name": "compact-sidebar",
+        "value": "760px"
+      },
+      {
+        "name": "compact-top-navigation",
+        "value": "560px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The main local action.",
+      "html": "<button class=\"ds-primary\">Save project</button>",
+      "css": ".ds-primary{font:12px 'Segoe UI',system-ui,sans-serif;font-weight:500;display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:10px 14px;border:0;border-radius:7px;cursor:pointer;background:var(--accent,#b9e59b);color:var(--accent-text,#1f3020)}.ds-primary:hover{filter:brightness(.94)}.ds-primary:focus-visible{outline:2px solid var(--accent,#b9e59b);outline-offset:3px}.ds-primary:disabled{opacity:.5;cursor:not-allowed}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Supporting actions with a quiet border.",
+      "html": "<button class=\"ds-secondary\">Open folder</button>",
+      "css": ".ds-secondary{font:12px 'Segoe UI',system-ui,sans-serif;font-weight:500;min-height:38px;padding:10px 14px;border:1px solid var(--border,#42423b);border-radius:7px;cursor:pointer;background:var(--surface,#232320);color:var(--text,#f5f4ef)}.ds-secondary:hover{background:var(--raised,#2e2e2b)}.ds-secondary:focus-visible{outline:2px solid var(--accent,#b9e59b);outline-offset:3px}.ds-secondary:disabled{opacity:.5;cursor:not-allowed}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Visible label with an outlined local-data field.",
+      "html": "<label class=\"ds-label\">Project name<input class=\"ds-input\" placeholder=\"My next project\"></label>",
+      "css": ".ds-label{font:12px 'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;gap:7px;color:var(--muted,#b8b7ad)}.ds-input{font:14px 'Segoe UI',system-ui,sans-serif;line-height:1.5;min-width:0;padding:9px 11px;border:1px solid var(--border,#42423b);border-radius:7px;background:var(--bg,#1c1c1a);color:var(--text,#f5f4ef);caret-color:var(--accent,#b9e59b)}.ds-input::placeholder{color:var(--faint,#9d9c91)}.ds-input:focus-visible{outline:2px solid var(--accent,#b9e59b);outline-offset:3px}"
+    },
+    {
+      "name": "Navigation Item",
+      "kind": "nav",
+      "refersTo": "navigation",
+      "description": "Current page uses accent text on a raised surface.",
+      "html": "<nav aria-label=\"Example navigation\"><button class=\"ds-nav\" aria-current=\"page\">Projects</button></nav>",
+      "css": ".ds-nav{font:14px 'Segoe UI',system-ui,sans-serif;display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:11px 13px;border:0;border-radius:7px;cursor:pointer;background:transparent;color:var(--muted,#b8b7ad)}.ds-nav:hover{background:var(--raised,#2e2e2b);color:var(--text,#f5f4ef)}.ds-nav[aria-current=page]{background:var(--raised,#2e2e2b);color:var(--accent,#b9e59b)}.ds-nav:focus-visible{outline:2px solid var(--accent,#b9e59b);outline-offset:3px}"
+    },
+    {
+      "name": "Status Tag",
+      "kind": "chip",
+      "refersTo": "status-tag",
+      "description": "Noninteractive capability or connection label.",
+      "html": "<span class=\"ds-tag\">Not connected</span>",
+      "css": ".ds-tag{font:12px 'Segoe UI',system-ui,sans-serif;display:inline-block;color:var(--muted,#b8b7ad);border:1px solid var(--border,#42423b);padding:2px 7px;border-radius:4px;white-space:nowrap}"
+    },
+    {
+      "name": "Empty State",
+      "kind": "card",
+      "description": "Dashed boundary for an empty list.",
+      "html": "<div class=\"ds-empty\"><h3>A clear list starts here.</h3><p>Add a todo, or use quick capture from any screen.</p></div>",
+      "css": ".ds-empty{font:14px 'Segoe UI',system-ui,sans-serif;padding:32px 28px;text-align:center;border:1px dashed var(--border,#42423b);border-radius:10px;color:var(--muted,#b8b7ad)}.ds-empty h3{font-size:15px;font-weight:500;color:var(--text,#f5f4ef);margin:0 0 6px}.ds-empty p{font-size:12px;max-width:440px;margin:auto;line-height:1.7}"
+    }
+  ],
+  "narrative": {
+    "overview": "The existing warm-charcoal utility reference is the visual authority. The panel is restrained, task-first and readable: system typography, flat tonal surfaces, divider-led lists and one mint accent. Light mode retains the component structure with its own semantic palette; system mode follows the OS color preference.\n\nThis documents the current React/CSS implementation. No pet, animation loop, gradients, remote fonts or decoration libraries belong to the approved direction.",
+    "keyCharacteristics": [
+      "Quiet surfaces and clear next actions.",
+      "Persistent quick capture and list-based content.",
+      "Compact Windows panel behavior rather than a separate mobile product."
+    ],
+    "dos": [
+      "Do preserve the warm neutral hierarchy and restrained accent.",
+      "Do use visible focus, readable metadata and wrapping for long local paths.",
+      "Do preserve compact window reflow and explicit connection/preview states."
+    ],
+    "donts": [
+      "Don't add a pet, animation loop, gradients or remote fonts.",
+      "Don't present stored history as verified live agent activity.",
+      "Don't treat browser screenshots as evidence of native release performance or behavior."
+    ]
+  }
+}
