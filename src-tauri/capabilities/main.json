@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Local utility panel only",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}
