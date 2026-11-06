@@ -24,10 +24,16 @@ use windows::{
 };
 const DONE: u32 = WM_APP + 30;
 const COPIED: u32 = WM_APP + 31;
-const WIDTH: i32 = 500;
-const HEIGHT: i32 = 46;
-const ROW_HEIGHT: i32 = 25;
+const OUTSIDE_CLICK: u32 = WM_APP + 32;
+const WIDTH: i32 = 460;
+const HEIGHT: i32 = 48;
+const FOOTER_HEIGHT: i32 = 28;
+const ROW_HEIGHT: i32 = 35;
 const VISIBLE_ROWS: usize = 5;
+const RAIL_WIDTH: i32 = 72;
+const RAIL_HEIGHT: i32 = 120;
+const RAIL_ROW: i32 = 30;
+const RAIL_ACTIONS: [(&str, &str); 3] = [("Find", "/f "), ("Focus", "/t "), ("Pet", "/pet")];
 #[derive(Clone)]
 enum Action {
     Input(String),
@@ -64,6 +70,8 @@ struct Bar {
     hwnd: HWND,
     edit: HWND,
     status: HWND,
+    rail: HWND,
+    click_hook: Option<HHOOK>,
     old_edit: WNDPROC,
     choices: Vec<(String, Action)>,
     selected: usize,
@@ -242,20 +250,48 @@ pub fn dismiss() {
     }
 }
 pub fn repaint_theme() {
-    if let Some(hwnd) = get(|bar| bar.hwnd) {
+    if let Some((hwnd, rail)) = get(|bar| (bar.hwnd, bar.rail)) {
         unsafe {
             let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_ALLCHILDREN);
+            if !rail.0.is_null() {
+                let _ = InvalidateRect(Some(rail), None, false);
+            }
         }
     }
 }
 unsafe fn hide() {
-    if let Some((h, search)) = get(|b| (b.hwnd, b.search.clone())) {
+    if let Some((h, rail, hook, search)) = change(|b| (b.hwnd, b.rail, b.click_hook.take(), b.search.clone())) {
+        if let Some(hook) = hook {
+            let _ = UnhookWindowsHookEx(hook);
+        }
         search.generation.fetch_add(1, Ordering::Relaxed);
+        if !rail.0.is_null() {
+            let _ = ShowWindow(rail, SW_HIDE);
+        }
         let _ = ShowWindow(h, SW_HIDE);
         if let Some(app) = get(|b| b.app.clone()) {
             crate::pet::bar_visibility(&app, false);
         }
     }
+}
+
+unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code >= 0 && matches!(wp.0 as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN) {
+        let point = (*(lp.0 as *const MSLLHOOKSTRUCT)).pt;
+        BAR.with(|state| {
+            if let Ok(state) = state.try_borrow() {
+                if let Some(bar) = state.as_ref() {
+                    let hit = WindowFromPoint(point);
+                    let inside = hit == bar.hwnd || hit == bar.rail
+                        || (hit == bar.pet && wp.0 as u32 == WM_LBUTTONDOWN);
+                    if !inside && !IsChild(bar.hwnd, hit).as_bool() {
+                        let _ = PostMessageW(Some(bar.hwnd), OUTSIDE_CLICK, WPARAM(0), LPARAM(0));
+                    }
+                }
+            }
+        });
+    }
+    CallNextHookEx(None, code, wp, lp)
 }
 fn open_tools(app: tauri::AppHandle) {
     let h = app.clone();
@@ -488,7 +524,8 @@ unsafe fn layout(hwnd: HWND) {
     let has_note = GetWindowTextLengthW(status) > 0;
     let mut rect = RECT::default();
     let _ = GetClientRect(hwnd, &mut rect);
-    let height = HEIGHT + rows as i32 * ROW_HEIGHT;
+    let content_height = HEIGHT + rows as i32 * ROW_HEIGHT;
+    let height = content_height + if has_note { FOOTER_HEIGHT } else if rows > 0 { 8 } else { 0 };
     let pet_dpi = GetDpiForWindow(pet).max(96) as i32;
     if rect.bottom != height * pet_dpi / 96 {
         position(hwnd, pet, height);
@@ -497,24 +534,22 @@ unsafe fn layout(hwnd: HWND) {
     }
     let width = rect.right;
     let start = s(43);
-    let end = width - s(126);
-    let divider = (width * 48 / 100).max(start + s(65));
-    let edit_end = if has_note { divider - s(8) } else { end };
+    let end = width - s(16);
     let _ = SetWindowPos(
         edit,
         None,
         start,
-        s(13),
-        (edit_end - start).max(1),
+        s(14),
+        (end - start).max(1),
         s(22),
         SWP_NOZORDER,
     );
     let _ = SetWindowPos(
         status,
         None,
-        divider,
-        s(13),
-        (end - divider).max(1),
+        s(16),
+        s(content_height + 4),
+        (end - s(16)).max(1),
         s(22),
         SWP_NOZORDER,
     );
@@ -621,51 +656,22 @@ unsafe fn paint(hwnd: HWND) {
     let old_brush = SelectObject(dc, surface.into());
     let old_pen = SelectObject(dc, outline.into());
     let _ = RoundRect(dc, 0, 0, rect.right, rect.bottom, scale(22), scale(22));
-    let paw = CreateSolidBrush(palette.accent);
-    SelectObject(dc, paw.into());
-    SelectObject(dc, GetStockObject(NULL_PEN));
-    for (left, top, right, bottom) in [
-        (19, 22, 31, 32),
-        (14, 18, 19, 24),
-        (20, 14, 25, 21),
-        (27, 14, 32, 21),
-        (33, 18, 38, 24),
-    ] {
-        let _ = Ellipse(dc, scale(left), scale(top), scale(right), scale(bottom));
+    let search_pen = CreatePen(PS_SOLID, scale(2).max(1), palette.accent);
+    SelectObject(dc, search_pen.into());
+    SelectObject(dc, GetStockObject(NULL_BRUSH));
+    let _ = Ellipse(dc, scale(16), scale(17), scale(27), scale(28));
+    let _ = MoveToEx(dc, scale(25), scale(26), None);
+    let _ = LineTo(dc, scale(31), scale(32));
+    if rect.bottom > scale(HEIGHT) {
+        SelectObject(dc, outline.into());
+        let _ = MoveToEx(dc, scale(12), scale(HEIGHT), None);
+        let _ = LineTo(dc, rect.right - scale(12), scale(HEIGHT));
     }
     SelectObject(dc, old_brush);
     SelectObject(dc, old_pen);
     get(|bar| {
         let previous_font = SelectObject(dc, bar.font.into());
         SetBkMode(dc, TRANSPARENT);
-        let (timer, task) = bar.app.try_state::<Shared>()
-            .and_then(|core| core.db.try_lock().ok().and_then(|db| rows(&db).ok()))
-            .map(|items| (
-                items.iter().any(|i| i.kind == "timer" && i.state == "running"),
-                items.iter().any(|i| i.kind == "todo" && !i.done),
-            )).unwrap_or_default();
-        let buttons = CreateSolidBrush(palette.selection);
-        let previous_brush = SelectObject(dc, buttons.into());
-        let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-        for (index, symbol) in ["⌕", "◷", "Pet", "·"].into_iter().enumerate() {
-            let left = rect.right - scale(116 - index as i32 * 27);
-            let right = left + scale(23);
-            let _ = Ellipse(dc, left, scale(11), right, scale(34));
-            SetTextColor(dc, if index < 3 { palette.ink } else { palette.accent });
-            let mut text: Vec<_> = symbol.encode_utf16().collect();
-            DrawTextW(dc, &mut text, &mut RECT { left, top: scale(11), right, bottom: scale(34) },
-                DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-        }
-        SelectObject(dc, paw.into());
-        for (visible, inset) in [(timer, 69), (task, 42)] {
-            if visible {
-                let left = rect.right - scale(inset);
-                let _ = Ellipse(dc, left, scale(10), left + scale(6), scale(16));
-            }
-        }
-        SelectObject(dc, previous_brush);
-        SelectObject(dc, previous_pen);
-        let _ = DeleteObject(buttons.into());
         if !bar.finder {
             SelectObject(dc, previous_font);
             return;
@@ -675,13 +681,17 @@ unsafe fn paint(hwnd: HWND) {
             let top = HEIGHT + (index - first) as i32 * ROW_HEIGHT;
             let mut bounds = RECT {
                 left: scale(12),
-                top: scale(top),
+                top: scale(top + 3),
                 right: rect.right - scale(12),
-                bottom: scale(top + ROW_HEIGHT),
+                bottom: scale(top + ROW_HEIGHT - 2),
             };
             if index == bar.selected {
                 let highlight = CreateSolidBrush(palette.selection);
-                let _ = FillRect(dc, &bounds, highlight);
+                let old = SelectObject(dc, highlight.into());
+                let pen = SelectObject(dc, GetStockObject(NULL_PEN));
+                let _ = RoundRect(dc, bounds.left, bounds.top, bounds.right, bounds.bottom, scale(9), scale(9));
+                SelectObject(dc, pen);
+                SelectObject(dc, old);
                 let _ = DeleteObject(highlight.into());
             }
             SetTextColor(dc, if index == bar.selected { palette.accent } else { palette.ink });
@@ -702,19 +712,105 @@ unsafe fn paint(hwnd: HWND) {
             let mut icon_bounds = RECT { right: bounds.left + scale(30), ..bounds };
             DrawTextW(dc, &mut icon, &mut icon_bounds, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             bounds.left += scale(33);
-            let mut label: Vec<_> = label.encode_utf16().collect();
-            DrawTextW(dc, &mut label, &mut bounds, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            if let Some((name, detail)) = label.split_once("  ·  ") {
+                let mut title_rect = RECT { bottom: bounds.top + scale(16), ..bounds };
+                let mut title: Vec<_> = name.encode_utf16().collect();
+                DrawTextW(dc, &mut title, &mut title_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                bounds.top += scale(15);
+                SetTextColor(dc, palette.accent);
+                let mut detail: Vec<_> = detail.encode_utf16().collect();
+                DrawTextW(dc, &mut detail, &mut bounds, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            } else {
+                let mut label: Vec<_> = label.encode_utf16().collect();
+                DrawTextW(dc, &mut label, &mut bounds, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            }
         }
         SelectObject(dc, previous_font);
     });
-    let _ = DeleteObject(paw.into());
+    let _ = DeleteObject(search_pen.into());
     let _ = DeleteObject(outline.into());
     let _ = DeleteObject(surface.into());
     let _ = EndPaint(hwnd, &paint);
 }
 
+unsafe extern "system" fn rail_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let dc = BeginPaint(hwnd, &mut ps);
+            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+            let s = |n| n * dpi / 96;
+            let palette = pet::appearance().palette();
+            let background = CreateSolidBrush(palette.surface);
+            let border = CreatePen(PS_SOLID, 1, palette.outline);
+            let old_brush = SelectObject(dc, background.into());
+            let old_pen = SelectObject(dc, border.into());
+            let _ = RoundRect(dc, 0, 0, s(RAIL_WIDTH), s(RAIL_HEIGHT), s(16), s(16));
+            if let Some((font, app)) = get(|bar| (bar.font, bar.app.clone())) {
+                let old_font = SelectObject(dc, font.into());
+                SetBkMode(dc, TRANSPARENT);
+                let (timer, tasks) = app.try_state::<Shared>()
+                    .and_then(|core| core.db.try_lock().ok().and_then(|db| rows(&db).ok()))
+                    .map(|items| (
+                        items.iter().any(|item| item.kind == "timer" && item.state == "running"),
+                        items.iter().any(|item| item.kind == "todo" && !item.done),
+                    )).unwrap_or_default();
+                for (index, (label, _)) in RAIL_ACTIONS.iter().enumerate() {
+                    let top = 5 + index as i32 * RAIL_ROW;
+                    let mut text: Vec<_> = label.encode_utf16().collect();
+                    SetTextColor(dc, if index == 1 && timer { palette.accent } else { palette.ink });
+                    DrawTextW(dc, &mut text, &mut RECT {
+                        left: s(7), top: s(top), right: s(RAIL_WIDTH - 7), bottom: s(top + RAIL_ROW),
+                    }, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                }
+                let badge = CreateSolidBrush(palette.accent);
+                SelectObject(dc, badge.into());
+                SelectObject(dc, GetStockObject(NULL_PEN));
+                if timer {
+                    let _ = Ellipse(dc, s(60), s(46), s(65), s(51));
+                }
+                if tasks {
+                    let _ = Ellipse(dc, s(15), s(105), s(20), s(110));
+                    SetTextColor(dc, palette.accent);
+                    let mut label: Vec<_> = "To-do".encode_utf16().collect();
+                    DrawTextW(dc, &mut label, &mut RECT {
+                        left: s(24), top: s(96), right: s(67), bottom: s(117),
+                    }, DT_SINGLELINE | DT_VCENTER);
+                }
+                SelectObject(dc, background.into());
+                let _ = DeleteObject(badge.into());
+                SelectObject(dc, old_font);
+            }
+            SelectObject(dc, old_pen);
+            SelectObject(dc, old_brush);
+            let _ = DeleteObject(border.into());
+            let _ = DeleteObject(background.into());
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            let y = (lp.0 >> 16) as i16 as i32 * 96 / GetDpiForWindow(hwnd).max(96) as i32;
+            if (5..5 + RAIL_ACTIONS.len() as i32 * RAIL_ROW).contains(&y) {
+                let (_, command) = RAIL_ACTIONS[((y - 5) / RAIL_ROW) as usize];
+                fill(command);
+                if let Some((bar, edit)) = get(|b| (b.hwnd, b.edit)) {
+                    let _ = SetForegroundWindow(bar);
+                    let _ = SetFocus(Some(edit));
+                }
+            }
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        OUTSIDE_CLICK => {
+            hide();
+            LRESULT(0)
+        }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -722,17 +818,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_LBUTTONUP => {
             let dpi = GetDpiForWindow(hwnd).max(96) as i32;
             let y = (lp.0 >> 16) as i16 as i32 * 96 / dpi;
-            if (11..34).contains(&y) {
-                let mut rect = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rect);
-                let distance = (rect.right - lp.0 as i16 as i32) * 96 / dpi;
-                match distance {
-                    94..=116 => fill("/f "),
-                    67..=89 => fill("/t "),
-                    40..=62 => fill("/pet"),
-                    _ => {}
-                }
-            }
             if y >= HEIGHT && change(|bar| {
                 let first = bar.selected / VISIBLE_ROWS * VISIBLE_ROWS;
                 let index = first + ((y - HEIGHT) / ROW_HEIGHT) as usize;
@@ -946,6 +1031,18 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
             result: Mutex::new(None),
             copy_result: Mutex::new(None),
         });
+        let rail_class = w!("DesktopBuddyActionRail");
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(rail_proc),
+            hInstance: instance.into(),
+            lpszClassName: rail_class,
+            ..Default::default()
+        });
+        let rail = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            rail_class, w!("Buddy actions"), WS_POPUP, 0, 0, RAIL_WIDTH, RAIL_HEIGHT,
+            None, None, Some(instance.into()), None,
+        ).unwrap_or_default();
         BAR.with(|s| {
             *s.borrow_mut() = Some(Bar {
                 app: app.clone(),
@@ -953,6 +1050,8 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 hwnd,
                 edit,
                 status,
+                rail,
+                click_hook: None,
                 old_edit,
                 choices: vec![],
                 selected: 0,
@@ -967,7 +1066,7 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
         let cue = w!("Search files or browse commands");
         SendMessageW(edit, 0x1501, Some(WPARAM(1)), Some(LPARAM(cue.0 as isize)));
     }
-    let Some((hwnd, edit)) = get(|b| (b.hwnd, b.edit)) else {
+    let Some((hwnd, edit, rail)) = get(|b| (b.hwnd, b.edit, b.rail)) else {
         return;
     };
     position(hwnd, pet, HEIGHT);
@@ -976,6 +1075,12 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     let _ = SetFocus(Some(edit));
+    if !rail.0.is_null() {
+        let _ = ShowWindow(rail, SW_SHOWNOACTIVATE);
+    }
+    let module = GetModuleHandleW(None).ok().map(Into::into);
+    let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_mouse), module, 0).ok();
+    change(|bar| bar.click_hook = hook);
     crate::pet::bar_visibility(app, IsWindowVisible(hwnd).as_bool());
 }
 
@@ -983,7 +1088,7 @@ unsafe fn position(hwnd: HWND, pet: HWND, height: i32) {
     let mut anchor = RECT::default();
     let _ = GetWindowRect(pet, &mut anchor);
     let dpi = GetDpiForWindow(pet).max(96) as i32;
-    let (width, height) = (WIDTH * dpi / 96, height * dpi / 96);
+    let height = height * dpi / 96;
     let monitor = MonitorFromWindow(pet, MONITOR_DEFAULTTONEAREST);
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -991,6 +1096,7 @@ unsafe fn position(hwnd: HWND, pet: HWND, height: i32) {
     };
     let _ = GetMonitorInfoW(monitor, &mut info);
     let r = info.rcWork;
+    let width = (WIDTH * dpi / 96).min((r.right - r.left).max(1));
     let x = ((anchor.left + anchor.right - width) / 2).clamp(r.left, (r.right - width).max(r.left));
     let y = if anchor.bottom + 6 + height <= r.bottom {
         anchor.bottom + 6
@@ -1006,4 +1112,23 @@ unsafe fn position(hwnd: HWND, pet: HWND, height: i32) {
         height,
         SWP_NOACTIVATE,
     );
+    if let Some(rail) = get(|bar| bar.rail).filter(|rail| !rail.0.is_null()) {
+        let (rw, rh) = (RAIL_WIDTH * dpi / 96, RAIL_HEIGHT * dpi / 96);
+        let gap = 8 * dpi / 96;
+        let right_room = r.right - anchor.right;
+        let left_room = anchor.left - r.left;
+        let rail_x = if right_room >= rw + gap || right_room >= left_room {
+            anchor.right + gap
+        } else {
+            anchor.left - gap - rw
+        }.clamp(r.left, (r.right - rw).max(r.left));
+        let rail_y = ((anchor.top + anchor.bottom - rh) / 2)
+            .clamp(r.top, (r.bottom - rh).max(r.top));
+        let _ = SetWindowPos(rail, Some(HWND_TOPMOST), rail_x, rail_y, rw, rh, SWP_NOACTIVATE);
+        let radius = 16 * dpi / 96;
+        let region = CreateRoundRectRgn(0, 0, rw, rh, radius, radius);
+        if SetWindowRgn(rail, Some(region), true) == 0 {
+            let _ = DeleteObject(region.into());
+        }
+    }
 }
