@@ -4,6 +4,7 @@ pub enum Command {
     Help,
     Tools,
     Copy,
+    Pets,
     Find(String),
     Workspaces(String),
     Timer { minutes: u32, title: String },
@@ -23,7 +24,7 @@ pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 7] {
+pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 8] {
     [
         (&["/t", "/timer", "/focus"][..], "/t 25m · Timer", "/t "),
         (&["/f", "/find"][..], "/f name · Find files and folders", "/f "),
@@ -31,6 +32,7 @@ pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 
         (&["/d", "/todo"][..], "/d task · To-do", "/d "),
         (&["/r", "/remind"][..], "/r 10m · Reminder", "/r "),
         (&["/copy"][..], "/copy · Copy held files", "/copy"),
+        (&["/pet"][..], "/pet · Choose pet", "/pet"),
         (
             &["/tools", "/settings"][..],
             "/tools · Full tools",
@@ -51,6 +53,7 @@ pub fn parse(text: &str) -> Result<Command, String> {
         "/tools" | "/settings" if args.is_empty() => Ok(Command::Tools),
         "/tools" | "/settings" => Ok(Command::Find(args.into())),
         "/copy" => Ok(Command::Copy),
+        "/pet" if args.is_empty() => Ok(Command::Pets),
         "/f" | "/find" => Ok(Command::Find(args.into())),
         "/w" | "/workspace" => Ok(Command::Workspaces(args.into())),
         "/d" | "/todo" if !args.is_empty() && args.len() <= 240 => Ok(Command::Todo(args.into())),
@@ -94,7 +97,8 @@ mod tests {
     use super::*;
     #[test]
     fn autocomplete_browses_empty_input_and_leaves_arguments_alone() {
-        assert_eq!(suggestions("").len(), 7);
+        assert_eq!(suggestions("").len(), 8);
+        assert_eq!(parse("/pet"), Ok(Command::Pets));
         assert_eq!(suggestions("/ti"), vec![("/t 25m · Timer", "/t ")]);
         assert!(suggestions("/t ").is_empty());
         assert!(suggestions("/t 15m review").is_empty());

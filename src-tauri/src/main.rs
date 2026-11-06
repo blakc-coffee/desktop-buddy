@@ -5,6 +5,7 @@ mod commands;
 mod finder;
 mod model;
 mod pet;
+mod pet_art;
 use model::*;
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -79,6 +80,7 @@ fn changed(app: &tauri::AppHandle, c: &Core) {
         c.wake.notify_all();
     }
     let _ = app.emit("data-changed", ());
+    pet::refresh_indicators(app);
 }
 #[tauri::command]
 fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
@@ -776,17 +778,28 @@ fn main() {
                 ));
             }
             let open = MenuItem::with_id(app, "open", "Open Desktop Buddy", true, None::<&str>)?;
+            let commands = MenuItem::with_id(app, "commands", "Toggle toolbar", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit (reminders stop)", true, None::<&str>)?;
             let show_pet = MenuItem::with_id(app, "show-pet", "Show pet", true, None::<&str>)?;
             let hide_pet = MenuItem::with_id(app, "hide-pet", "Hide pet", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &show_pet, &hide_pet, &quit])?;
+            let cat = MenuItem::with_id(app, "pet-cat", "Pet · Cosmo (Cat)", true, None::<&str>)?;
+            let dog = MenuItem::with_id(app, "pet-dog", "Pet · Shiba Inu (Dog)", true, None::<&str>)?;
+            let calico = MenuItem::with_id(app, "pet-calico", "Pet · Calico", true, None::<&str>)?;
+            let panda = MenuItem::with_id(app, "pet-panda", "Pet · Panda", true, None::<&str>)?;
+            let husky = MenuItem::with_id(app, "pet-husky", "Pet · Siberian Husky", true, None::<&str>)?;
+            let motion = tauri::menu::Submenu::new(app, "Try and select motion set", true)?;
+            for index in 0..5 {
+                let item = MenuItem::with_id(app, format!("motion-{index}"), format!("Set {}", index + 1), true, None::<&str>)?;
+                motion.append(&item)?;
+            }
+            let menu = Menu::with_items(app, &[&open, &commands, &show_pet, &hide_pet, &cat, &calico, &dog, &panda, &husky, &motion, &quit])?;
             let mut pixels = vec![0u8; 32 * 32 * 4];
             for y in 5..27 {
                 for x in 5..27 {
                     let n = (y * 32 + x) * 4;
                     let accent = (10..14).contains(&x) || (18..22).contains(&x);
                     pixels[n..n + 4].copy_from_slice(if accent {
-                        &[185, 229, 155, 255]
+                        &[220, 186, 252, 255]
                     } else {
                         &[46, 46, 43, 255]
                     });
@@ -799,14 +812,26 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_panel(app),
+                    "commands" => {
+                        let _ = pet::pet_commands(app.clone());
+                    }
                     "show-pet" => {
                         let _ = pet::pet_show(app.clone());
                     }
                     "hide-pet" => {
                         let _ = pet::pet_hide(app.clone());
                     }
+                    "pet-cat" => pet::set_appearance(app, pet_art::Appearance::Cat),
+                    "pet-dog" => pet::set_appearance(app, pet_art::Appearance::Dog),
+                    "pet-calico" => pet::set_appearance(app, pet_art::Appearance::Calico),
+                    "pet-panda" => pet::set_appearance(app, pet_art::Appearance::Panda),
+                    "pet-husky" => pet::set_appearance(app, pet_art::Appearance::Husky),
                     "quit" => request_quit(app),
-                    _ => {}
+                    id => {
+                        if let Some(index) = id.strip_prefix("motion-").and_then(|value| value.parse().ok()) {
+                            pet::preview(app, index);
+                        }
+                    }
                 })
                 .on_tray_icon_event(|tray, event| {
                     if matches!(

@@ -24,19 +24,17 @@ use windows::{
 };
 const DONE: u32 = WM_APP + 30;
 const COPIED: u32 = WM_APP + 31;
-const WIDTH: i32 = 392;
+const WIDTH: i32 = 500;
 const HEIGHT: i32 = 46;
 const ROW_HEIGHT: i32 = 25;
 const VISIBLE_ROWS: usize = 5;
-const SURFACE: COLORREF = COLORREF(0x0031222c);
-const INK: COLORREF = COLORREF(0x00f6ebfa);
-const ACCENT: COLORREF = COLORREF(0x00bae9c9);
 #[derive(Clone)]
 enum Action {
     Input(String),
     Complete(&'static str),
     Tools,
     Copy,
+    Pet(crate::pet_art::Appearance),
     Open(String),
     OpenFile(String),
     Editor(String),
@@ -149,7 +147,14 @@ unsafe fn refresh() {
     } else {
         commands::parse(&text)
     };
-    if !matches!(command, Ok(Parsed::Tools | Parsed::Copy)) {
+    if let Some((_, hint, completion)) = commands::definitions().into_iter().find(|(aliases, _, completion)| {
+        completion.ends_with(' ') && aliases.iter().any(|alias| text.trim().eq_ignore_ascii_case(alias))
+    }) {
+        choices(vec![(String::new(), Action::Complete(completion))]);
+        note(hint);
+        return;
+    }
+    if !matches!(command, Ok(Parsed::Tools | Parsed::Copy | Parsed::Pets)) {
         let suggestions = commands::suggestions(&text);
         if !suggestions.is_empty() {
             choices(
@@ -202,6 +207,20 @@ unsafe fn refresh() {
         }
         Ok(Parsed::Tools) => choices(vec![(String::new(), Action::Tools)]),
         Ok(Parsed::Copy) => choices(vec![(String::new(), Action::Copy)]),
+        Ok(Parsed::Pets) => {
+            use crate::pet_art::Appearance::*;
+            let current = pet::appearance();
+            change(|bar| bar.finder = true);
+            choices(
+                [(Cat, "Cosmo · Tuxedo cat"), (Calico, "Calico"), (Dog, "Shiba Inu"), (Panda, "Panda"), (Husky, "Siberian Husky")]
+                    .into_iter()
+                    .map(|(pet, label)| {
+                        let label = if pet == current { format!("{label} · Current") } else { label.into() };
+                        (label, Action::Pet(pet))
+                    })
+                    .collect(),
+            );
+        }
         Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::Todo(_)) => {
             choices(vec![(String::new(), Action::Input(text))])
         }
@@ -220,6 +239,13 @@ unsafe fn refresh() {
 pub fn dismiss() {
     unsafe {
         hide();
+    }
+}
+pub fn repaint_theme() {
+    if let Some(hwnd) = get(|bar| bar.hwnd) {
+        unsafe {
+            let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_ALLCHILDREN);
+        }
     }
 }
 unsafe fn hide() {
@@ -309,6 +335,12 @@ unsafe fn execute() {
         Action::Tools => {
             hide();
             open_tools(app);
+            return;
+        }
+        Action::Pet(appearance) => {
+            pet::set_appearance(&app, appearance);
+            fill("");
+            note("Pet selected");
             return;
         }
         Action::Open(path) => open_path(path).map(|_| "Folder opened.".to_string()),
@@ -465,7 +497,7 @@ unsafe fn layout(hwnd: HWND) {
     }
     let width = rect.right;
     let start = s(43);
-    let end = width - s(14);
+    let end = width - s(126);
     let divider = (width * 48 / 100).max(start + s(65));
     let edit_end = if has_note { divider - s(8) } else { end };
     let _ = SetWindowPos(
@@ -582,12 +614,14 @@ unsafe fn paint(hwnd: HWND) {
     let scale = |value| value * dpi / 96;
     let mut rect = RECT::default();
     let _ = GetClientRect(hwnd, &mut rect);
-    let surface = CreateSolidBrush(SURFACE);
-    let outline = CreatePen(PS_SOLID, 1, COLORREF(0x006a4e68));
+    let palette = pet::appearance().palette();
+    let surface = CreateSolidBrush(palette.surface);
+    let outline = CreatePen(PS_SOLID, 1, palette.outline);
+    let _ = FillRect(dc, &rect, surface);
     let old_brush = SelectObject(dc, surface.into());
     let old_pen = SelectObject(dc, outline.into());
     let _ = RoundRect(dc, 0, 0, rect.right, rect.bottom, scale(22), scale(22));
-    let paw = CreateSolidBrush(ACCENT);
+    let paw = CreateSolidBrush(palette.accent);
     SelectObject(dc, paw.into());
     SelectObject(dc, GetStockObject(NULL_PEN));
     for (left, top, right, bottom) in [
@@ -602,13 +636,42 @@ unsafe fn paint(hwnd: HWND) {
     SelectObject(dc, old_brush);
     SelectObject(dc, old_pen);
     get(|bar| {
-        if !bar.finder {
-            return;
-        }
         let previous_font = SelectObject(dc, bar.font.into());
         SetBkMode(dc, TRANSPARENT);
+        let (timer, task) = bar.app.try_state::<Shared>()
+            .and_then(|core| core.db.try_lock().ok().and_then(|db| rows(&db).ok()))
+            .map(|items| (
+                items.iter().any(|i| i.kind == "timer" && i.state == "running"),
+                items.iter().any(|i| i.kind == "todo" && !i.done),
+            )).unwrap_or_default();
+        let buttons = CreateSolidBrush(palette.selection);
+        let previous_brush = SelectObject(dc, buttons.into());
+        let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+        for (index, symbol) in ["⌕", "◷", "Pet", "·"].into_iter().enumerate() {
+            let left = rect.right - scale(116 - index as i32 * 27);
+            let right = left + scale(23);
+            let _ = Ellipse(dc, left, scale(11), right, scale(34));
+            SetTextColor(dc, if index < 3 { palette.ink } else { palette.accent });
+            let mut text: Vec<_> = symbol.encode_utf16().collect();
+            DrawTextW(dc, &mut text, &mut RECT { left, top: scale(11), right, bottom: scale(34) },
+                DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        }
+        SelectObject(dc, paw.into());
+        for (visible, inset) in [(timer, 69), (task, 42)] {
+            if visible {
+                let left = rect.right - scale(inset);
+                let _ = Ellipse(dc, left, scale(10), left + scale(6), scale(16));
+            }
+        }
+        SelectObject(dc, previous_brush);
+        SelectObject(dc, previous_pen);
+        let _ = DeleteObject(buttons.into());
+        if !bar.finder {
+            SelectObject(dc, previous_font);
+            return;
+        }
         let first = bar.selected / VISIBLE_ROWS * VISIBLE_ROWS;
-        for (index, (label, _)) in bar.choices.iter().enumerate().skip(first).take(VISIBLE_ROWS) {
+        for (index, (label, action)) in bar.choices.iter().enumerate().skip(first).take(VISIBLE_ROWS) {
             let top = HEIGHT + (index - first) as i32 * ROW_HEIGHT;
             let mut bounds = RECT {
                 left: scale(12),
@@ -617,13 +680,28 @@ unsafe fn paint(hwnd: HWND) {
                 bottom: scale(top + ROW_HEIGHT),
             };
             if index == bar.selected {
-                let highlight = CreateSolidBrush(COLORREF(0x0056404e));
+                let highlight = CreateSolidBrush(palette.selection);
                 let _ = FillRect(dc, &bounds, highlight);
                 let _ = DeleteObject(highlight.into());
             }
-            SetTextColor(dc, if index == bar.selected { ACCENT } else { INK });
+            SetTextColor(dc, if index == bar.selected { palette.accent } else { palette.ink });
             bounds.left += scale(8);
             bounds.right -= scale(8);
+            let symbol = match action {
+                Action::Open(_) => "▰",
+                Action::OpenFile(path) => match Path::new(path).extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase).as_deref() {
+                    Some("pdf") => "PDF",
+                    Some("xls" | "xlsx" | "xlsm" | "csv" | "ods") => "▦",
+                    Some("jpg" | "jpeg" | "png" | "webp" | "gif") => "▧",
+                    Some("zip" | "7z" | "rar") => "▣",
+                    _ => "▤",
+                },
+                _ => "›",
+            };
+            let mut icon: Vec<_> = symbol.encode_utf16().collect();
+            let mut icon_bounds = RECT { right: bounds.left + scale(30), ..bounds };
+            DrawTextW(dc, &mut icon, &mut icon_bounds, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            bounds.left += scale(33);
             let mut label: Vec<_> = label.encode_utf16().collect();
             DrawTextW(dc, &mut label, &mut bounds, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
@@ -642,7 +720,19 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let y = (lp.0 >> 16) as i16 as i32 * 96 / GetDpiForWindow(hwnd).max(96) as i32;
+            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+            let y = (lp.0 >> 16) as i16 as i32 * 96 / dpi;
+            if (11..34).contains(&y) {
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let distance = (rect.right - lp.0 as i16 as i32) * 96 / dpi;
+                match distance {
+                    94..=116 => fill("/f "),
+                    67..=89 => fill("/t "),
+                    40..=62 => fill("/pet"),
+                    _ => {}
+                }
+            }
             if y >= HEIGHT && change(|bar| {
                 let first = bar.selected / VISIBLE_ROWS * VISIBLE_ROWS;
                 let index = first + ((y - HEIGHT) / ROW_HEIGHT) as usize;
@@ -676,16 +766,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
             let dc = HDC(wp.0 as _);
+            let palette = pet::appearance().palette();
             SetTextColor(
                 dc,
                 if msg == WM_CTLCOLORSTATIC {
-                    ACCENT
+                    palette.accent
                 } else {
-                    INK
+                    palette.ink
                 },
             );
-            SetBkColor(dc, SURFACE);
-            LRESULT(GetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND) as isize)
+            SetBkColor(dc, palette.surface);
+            SetDCBrushColor(dc, palette.surface);
+            LRESULT(GetStockObject(DC_BRUSH).0 as isize)
         }
         WM_COMMAND => {
             let id = wp.0 & 0xffff;
@@ -746,10 +838,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             LRESULT(0)
         }
-        WM_ACTIVATE if wp.0 & 0xffff == WA_INACTIVE as usize => {
-            hide();
-            LRESULT(0)
-        }
         WM_SIZE => {
             let dpi = GetDpiForWindow(hwnd).max(96) as i32;
             let radius = 22 * dpi / 96;
@@ -796,12 +884,10 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
             Err(_) => return,
         };
         let class = w!("DesktopBuddyCommandBar");
-        let bg = CreateSolidBrush(SURFACE);
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(proc),
             hInstance: instance.into(),
             lpszClassName: class,
-            hbrBackground: bg,
             ..Default::default()
         });
         let Ok(hwnd) = CreateWindowExW(
@@ -813,7 +899,7 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
             0,
             WIDTH,
             HEIGHT,
-            Some(pet),
+            None,
             None,
             Some(instance.into()),
             None,

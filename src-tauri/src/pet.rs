@@ -1,5 +1,6 @@
 //! Native, idle-static Windows companion and temporary copy-only file handoff.
 use super::*;
+use crate::pet_art::{self, AnimationPhase, AnimationSet, Appearance};
 use std::{
     cell::RefCell,
     sync::atomic::{AtomicBool, AtomicIsize, Ordering},
@@ -27,6 +28,13 @@ const HOLD: u32 = WM_APP + 14;
 const COPY: u32 = WM_APP + 15;
 const COMMANDS: u32 = WM_APP + 16;
 const CLOSE_COMMANDS: u32 = WM_APP + 17;
+const APPEARANCE: u32 = WM_APP + 18;
+const PREVIEW: u32 = WM_APP + 19;
+const REFRESH_INDICATORS: u32 = WM_APP + 20;
+const MOTION_TIMER: usize = 2;
+pub const APPEARANCES: [Appearance; 5] = [
+    Appearance::Cat, Appearance::Dog, Appearance::Calico, Appearance::Panda, Appearance::Husky,
+];
 const HOLD_SECS: u64 = 120;
 const WIDTH: i32 = 128;
 const HEIGHT: i32 = 136;
@@ -53,6 +61,9 @@ struct State {
     deadline: Option<Instant>,
     press: Option<(POINT, RECT, bool)>,
     hover: bool,
+    appearance: Appearance,
+    motion_set: usize,
+    motion: Option<(AnimationPhase, usize, bool)>,
 }
 thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 fn wide(s: &str) -> Vec<u16> {
@@ -60,6 +71,56 @@ fn wide(s: &str) -> Vec<u16> {
 }
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
     STATE.with(|s| s.borrow_mut().as_mut().map(f))
+}
+pub fn appearance() -> Appearance {
+    with_state(|state| state.appearance).unwrap_or_default()
+}
+
+pub fn set_appearance(app: &tauri::AppHandle, appearance: Appearance) {
+    if let Some(control) = app.try_state::<Arc<Control>>() {
+        let hwnd = HWND(control.hwnd.load(Ordering::Relaxed) as _);
+        if !hwnd.0.is_null() {
+            if let Some(index) = APPEARANCES.iter().position(|candidate| *candidate == appearance) {
+                let _ = unsafe { PostMessageW(Some(hwnd), APPEARANCE, WPARAM(index), LPARAM(0)) };
+            }
+        }
+    }
+}
+pub fn preview(app: &tauri::AppHandle, index: usize) {
+    if let Some(control) = app.try_state::<Arc<Control>>() {
+        let hwnd = HWND(control.hwnd.load(Ordering::Relaxed) as _);
+        if !hwnd.0.is_null() && index < 5 {
+            let _ = unsafe { PostMessageW(Some(hwnd), PREVIEW, WPARAM(index), LPARAM(0)) };
+        }
+    }
+}
+
+impl State {
+    fn frames(&self, phase: AnimationPhase) -> &'static [pet_art::PoseKeyframe] {
+        let set = &self.appearance.animation_sets()[self.motion_set];
+        match phase {
+            AnimationPhase::Pickup => set.pickup,
+            AnimationPhase::Held => set.held,
+            AnimationPhase::Release => set.release,
+        }
+    }
+}
+
+unsafe fn advance_motion(hwnd: HWND, state: &mut State, next: Option<(AnimationPhase, usize, bool)>) {
+    let _ = KillTimer(Some(hwnd), MOTION_TIMER);
+    let mut enabled = BOOL(1);
+    let _ = SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&mut enabled as *mut BOOL).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
+    state.motion = next;
+    if let Some((phase, index, preview)) = next {
+        if let Some(frame) = state.frames(phase).get(index) {
+            let duration = if enabled.as_bool() { u32::from(frame.duration_ms).max(16) } else { 350 };
+            SetTimer(Some(hwnd), MOTION_TIMER, duration, None);
+        }
+        if !enabled.as_bool() {
+            state.motion = Some((phase, usize::MAX, preview));
+        }
+    }
+    let _ = InvalidateRect(Some(hwnd), None, false);
 }
 fn seconds(deadline: Option<Instant>) -> u64 {
     deadline
@@ -80,6 +141,7 @@ unsafe fn hold(hwnd: HWND, state: &mut State, files: Vec<PathBuf>) {
     state.files = files;
     state.deadline = Some(Instant::now() + Duration::from_secs(HOLD_SECS));
     SetTimer(Some(hwnd), 1, 1000, None);
+    advance_motion(hwnd, state, Some((AnimationPhase::Pickup, 0, false)));
     if let Ok(mut status) = state.control.status.lock() {
         status.message =
             "Files held for 120 seconds. Drag to copy out, or use Copy held files.".into();
@@ -111,12 +173,19 @@ fn setting(app: &tauri::AppHandle, key: &str) -> Option<String> {
     })
     .ok()
 }
+fn motion_setting(app: &tauri::AppHandle, appearance: Appearance) -> usize {
+    setting(app, &format!("pet_motion_{}", appearance.key()))
+        .and_then(|value| value.parse().ok())
+        .filter(|index| *index < 5)
+        .unwrap_or(0)
+}
 unsafe fn expire(hwnd: HWND) {
     with_state(|s| {
         if seconds(s.deadline) == 0 && s.deadline.is_some() {
             s.files.clear();
             s.deadline = None;
             let _ = KillTimer(Some(hwnd), 1);
+            advance_motion(hwnd, s, None);
             if let Ok(mut v) = s.control.status.lock() {
                 v.message = "Hold expired. Original files were left in place.".into();
             }
@@ -334,6 +403,7 @@ unsafe fn finish_handoff(hwnd: HWND, state: &mut State, deadline: Option<Instant
         state.files.clear();
         state.deadline = None;
         let _ = KillTimer(Some(hwnd), 1);
+        advance_motion(hwnd, state, Some((AnimationPhase::Release, 0, false)));
         publish(state);
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
@@ -483,64 +553,38 @@ unsafe fn paint(hwnd: HWND) {
         bg,
     );
     let _ = DeleteObject(bg.into());
-    let (count, left, hover) =
-        with_state(|s| (s.files.len(), seconds(s.deadline), s.hover)).unwrap_or_default();
-    let pen = CreatePen(PS_SOLID, 2, COLORREF(0x002c5137));
-    let oldpen = SelectObject(dc, pen.into());
-    let brush = CreateSolidBrush(COLORREF(if hover { 0x00c3f5ce } else { 0x009be5b9 }));
-    let oldbrush = SelectObject(dc, brush.into());
-    let _ = RoundRect(dc, 27, 23, 101, 99, 30, 30);
-    let _ = RoundRect(dc, 31, 87, 51, 106, 10, 10);
-    let _ = RoundRect(dc, 78, 87, 98, 106, 10, 10);
-    let _ = Ellipse(dc, 39, 15, 50, 32);
-    let _ = Ellipse(dc, 78, 15, 89, 32);
-    let eyes = CreateSolidBrush(COLORREF(0x001e3020));
-    SelectObject(dc, eyes.into());
-    let _ = Ellipse(dc, 46, 44, 54, 55);
-    let _ = Ellipse(dc, 75, 44, 83, 55);
-    let _ = MoveToEx(dc, 59, 62, None);
-    let _ = LineTo(dc, 65, 65);
-    let _ = LineTo(dc, 71, 62);
-    let pouch = CreateSolidBrush(COLORREF(0x00eff4f5));
-    SelectObject(dc, pouch.into());
-    let _ = RoundRect(dc, 39, 72, 90, 94, 7, 7);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, COLORREF(0x001e3020));
-    let text = if count > 0 {
-        format!("{}", count)
-    } else {
-        "+".into()
-    };
-    let mut text = wide(&text);
-    let text_len = text.len() - 1;
-    DrawTextW(
-        dc,
-        &mut text[..text_len],
-        &mut RECT {
-            left: 39,
-            top: 73,
-            right: 90,
-            bottom: 94,
-        },
-        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-    );
-    SelectObject(dc, oldbrush);
-    SelectObject(dc, oldpen);
-    let _ = DeleteObject(brush.into());
-    let _ = DeleteObject(eyes.into());
-    let _ = DeleteObject(pouch.into());
-    let _ = DeleteObject(pen.into());
+    let (count, left, hover, appearance, pose, file_visible) = with_state(|state| {
+        let count = state.files.len();
+        let (pose, file_visible) = match state.motion {
+            Some((phase, index, _)) => (
+                state.frames(phase).get(index).copied()
+                    .unwrap_or_else(|| AnimationSet::reduced_motion_pose(phase)),
+                phase != AnimationPhase::Release,
+            ),
+            None if count > 0 => (AnimationSet::reduced_motion_pose(AnimationPhase::Held), true),
+            None => (AnimationSet::neutral_still_pose(), false),
+        };
+        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_visible)
+    }).unwrap_or_default();
+    let mapped = SaveDC(dc);
+    SetMapMode(dc, MM_TEXT);
+    pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_visible);
+    let _ = RestoreDC(dc, mapped);
     if count == 0 {
         let _ = EndPaint(hwnd, &ps);
         return;
     }
     // Opaque dark caption remains readable on either light or dark desktops.
-    let caption = CreateSolidBrush(COLORREF(0x001a1c1c));
+    let palette = appearance.palette();
+    let caption = CreateSolidBrush(palette.surface);
     let previous = SelectObject(dc, caption.into());
+    let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
     let _ = RoundRect(dc, 9, 111, 119, 132, 8, 8);
+    SelectObject(dc, previous_pen);
     SelectObject(dc, previous);
     let _ = DeleteObject(caption.into());
-    SetTextColor(dc, COLORREF(0x00eff4f5));
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, palette.ink);
     let label = format!("{count} held · {left}s");
     let mut text = wide(&label);
     let len = text.len() - 1;
@@ -564,6 +608,22 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_TIMER if wp.0 == MOTION_TIMER => {
+            with_state(|state| {
+                let next = state.motion.and_then(|(phase, index, preview)| {
+                    if index.saturating_add(1) < state.frames(phase).len() {
+                        return Some((phase, index + 1, preview));
+                    }
+                    match phase {
+                        AnimationPhase::Pickup => Some((AnimationPhase::Held, 0, preview)),
+                        AnimationPhase::Held if preview => Some((AnimationPhase::Release, 0, true)),
+                        _ => None,
+                    }
+                });
+                advance_motion(hwnd, state, next);
+            });
+            LRESULT(0)
+        }
         WM_TIMER => {
             expire(hwnd);
             LRESULT(0)
@@ -597,6 +657,33 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         CLOSE_COMMANDS => {
             crate::bar::dismiss();
+            LRESULT(0)
+        }
+        APPEARANCE => {
+            let appearance = APPEARANCES.get(wp.0).copied().unwrap_or_default();
+            with_state(|state| {
+                state.appearance = appearance;
+                save(&state.app, "pet_appearance", appearance.key());
+                state.motion_set = motion_setting(&state.app, appearance);
+                advance_motion(hwnd, state, None);
+            });
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            crate::bar::repaint_theme();
+            LRESULT(0)
+        }
+        PREVIEW => {
+            with_state(|state| {
+                if wp.0 < 5 && state.files.is_empty() {
+                    state.motion_set = wp.0;
+                    save(&state.app, &format!("pet_motion_{}", state.appearance.key()), &wp.0.to_string());
+                    let _ = PostMessageW(Some(hwnd), SHOW, WPARAM(0), LPARAM(0));
+                    advance_motion(hwnd, state, Some((AnimationPhase::Pickup, 0, true)));
+                }
+            });
+            LRESULT(0)
+        }
+        REFRESH_INDICATORS => {
+            crate::bar::repaint_theme();
             LRESULT(0)
         }
         SHOW | HIDE => {
@@ -641,7 +728,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
-            crate::bar::dismiss();
             let mut p = POINT::default();
             let mut r = RECT::default();
             let _ = GetCursorPos(&mut p);
@@ -688,6 +774,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let _ = ReleaseCapture();
             if let Some((_, _, moved)) = press {
                 if moved {
+                    crate::bar::dismiss();
                     clamp(hwnd, false);
                     persist_position(hwnd);
                 } else {
@@ -742,6 +829,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         with_state(|s| {
                             s.files.clear();
                             s.deadline = None;
+                            advance_motion(hwnd, s, None);
                             publish(s);
                         });
                         let _ = KillTimer(Some(hwnd), 1);
@@ -807,6 +895,10 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
             if RegisterClassW(&wc) == 0 {
                 return Err(windows::core::Error::from_thread());
             }
+            let appearance = setting(&app, "pet_appearance")
+                .as_deref()
+                .map(Appearance::from_key)
+                .unwrap_or_default();
             STATE.with(|s| {
                 *s.borrow_mut() = Some(State {
                     app: app.clone(),
@@ -815,6 +907,9 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                     deadline: None,
                     press: None,
                     hover: false,
+                    appearance,
+                    motion_set: motion_setting(&app, appearance),
+                    motion: None,
                 })
             });
             let hwnd = CreateWindowExW(
@@ -917,6 +1012,9 @@ fn message(app: &tauri::AppHandle, msg: u32) -> Result<(), String> {
         return Err("Pet window is unavailable.".into());
     }
     unsafe { PostMessageW(Some(HWND(hwnd as _)), msg, WPARAM(0), LPARAM(0)).map_err(err) }
+}
+pub fn refresh_indicators(app: &tauri::AppHandle) {
+    let _ = message(app, REFRESH_INDICATORS);
 }
 #[tauri::command]
 pub fn pet_show(app: tauri::AppHandle) -> Result<(), String> {
