@@ -590,6 +590,7 @@ impl PetTimer {
 struct Indicators {
     timer: Option<PetTimer>,
     reminder: Option<ReminderMark>,
+    has_todos: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -599,6 +600,10 @@ enum ReminderMark {
 }
 
 impl Indicators {
+    fn shows_paw(&self) -> bool {
+        self.has_todos || self.reminder.is_some()
+    }
+
     fn visible_timer(&self) -> Option<&PetTimer> {
         self.timer.as_ref().filter(|timer| timer.display().is_some())
     }
@@ -613,13 +618,14 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
         let core = app.try_state::<Shared>()?;
         let db = core.db.lock().ok()?;
         let mut query = db.prepare(
-            "SELECT payload FROM items WHERE kind IN ('timer', 'reminder', 'attention') ORDER BY created DESC",
+            "SELECT payload FROM items WHERE kind IN ('timer', 'reminder', 'attention', 'todo') ORDER BY created DESC",
         ).ok()?;
         let items = query.query_map([], |row| row.get::<_, String>(0)).ok()?;
         let mut indicators = Indicators::default();
         let mut paused = None;
         for item in items.filter_map(Result::ok).filter_map(|payload| serde_json::from_str::<Item>(&payload).ok()) {
             match item.kind.as_str() {
+                "todo" if !item.done => indicators.has_todos = true,
                 "timer" if item.state == "running" && indicators.timer.is_none() => {
                     let left = remaining(&item, now(), ticks(), &core.run);
                     if left > 0 {
@@ -670,31 +676,70 @@ fn timer_bounds(has_files: bool) -> RECT {
     RECT { left: if has_files { 51 } else { 9 }, top: 111, right: 119, bottom: 132 }
 }
 
-unsafe fn reminder_mark(dc: HDC, mark: ReminderMark, palette: pet_art::Palette) {
-    // A little plush star, drawn directly beside the pet.
-    let fill = CreateSolidBrush(palette.accent);
-    let outline = CreatePen(PS_SOLID, 1, palette.surface);
-    let previous_brush = SelectObject(dc, fill.into());
-    let previous_pen = SelectObject(dc, outline.into());
-    let point = |x, y| POINT { x, y };
-    let _ = Polygon(dc, &[
-        point(15, 7), point(18, 13), point(25, 14), point(20, 19), point(21, 26),
-        point(15, 23), point(9, 26), point(10, 19), point(5, 14), point(12, 13),
-    ]);
-    let _ = MoveToEx(dc, 12, 17, None);
-    let _ = LineTo(dc, 12, 19);
-    let _ = MoveToEx(dc, 18, 17, None);
-    let _ = LineTo(dc, 18, 19);
-    let _ = Polyline(dc, &[point(14, 19), point(15, 20), point(16, 19)]);
-    if matches!(mark, ReminderMark::Due) {
-        let _ = Polyline(dc, &[point(25, 4), point(28, 7), point(25, 10), point(22, 7), point(25, 4)]);
-        let _ = MoveToEx(dc, 6, 7, None);
-        let _ = LineTo(dc, 9, 7);
+const PAW_BOUNDS: RECT = RECT { left: 3, top: 3, right: 31, bottom: 31 };
+
+unsafe fn paw_badge(dc: HDC, due: bool, palette: pet_art::Palette) {
+    let surface = CreateSolidBrush(if due { palette.accent } else { palette.surface });
+    let pads = CreateSolidBrush(if due { palette.surface } else { palette.accent });
+    let previous_brush = SelectObject(dc, surface.into());
+    let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let r = PAW_BOUNDS;
+    let _ = Ellipse(dc, r.left, r.top, r.right, r.bottom);
+    SelectObject(dc, pads.into());
+    for (left, top) in [(8, 13), (12, 9), (18, 9), (22, 13)] {
+        let _ = Ellipse(dc, left, top, left + 5, top + 6);
     }
+    let _ = Ellipse(dc, 11, 17, 23, 25);
     SelectObject(dc, previous_pen);
     SelectObject(dc, previous_brush);
-    let _ = DeleteObject(outline.into());
-    let _ = DeleteObject(fill.into());
+    let _ = DeleteObject(surface.into());
+    let _ = DeleteObject(pads.into());
+}
+
+unsafe fn show_todos(app: &tauri::AppHandle, hwnd: HWND) {
+    const LIMIT: usize = 8;
+    let todos = app.try_state::<Shared>()
+        .and_then(|core| core.db.lock().ok().and_then(|db| rows(&db).ok()))
+        .map(|items| items.into_iter().filter(|item| item.kind == "todo" && !item.done).collect::<Vec<_>>());
+    let Ok(menu) = CreatePopupMenu() else {
+        return;
+    };
+    let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("Open to-dos"));
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    match todos {
+        None => { let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("Could not load to-dos")); }
+        Some(todos) if todos.is_empty() => {
+            let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("No open to-dos"));
+        }
+        Some(todos) => {
+            for item in todos.iter().take(LIMIT) {
+                let title = item.title.split_whitespace().collect::<Vec<_>>().join(" ");
+                let mut chars = title.chars();
+                let mut title: String = chars.by_ref().take(56).collect();
+                if chars.next().is_some() {
+                    title.push('…');
+                }
+                let title = title.replace('&', "&&");
+                let label: Vec<_> = title.encode_utf16().chain(Some(0)).collect();
+                let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, PCWSTR(label.as_ptr()));
+            }
+            if todos.len() > LIMIT {
+                let label: Vec<_> = format!("{} more in Tasks", todos.len() - LIMIT).encode_utf16().chain(Some(0)).collect();
+                let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, PCWSTR(label.as_ptr()));
+            }
+        }
+    }
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    let _ = AppendMenuW(menu, MF_STRING, 1, w!("Close"));
+    let mut rect = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut rect);
+    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+    crate::bar::dismiss();
+    let _ = SetForegroundWindow(hwnd);
+    let _ = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        rect.left + PAW_BOUNDS.left * dpi / 96, rect.top + PAW_BOUNDS.bottom * dpi / 96,
+        None, hwnd, None);
+    let _ = DestroyMenu(menu);
 }
 unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: COLORREF) {
     let fill = CreateSolidBrush(surface);
@@ -734,7 +779,7 @@ unsafe fn paint(hwnd: HWND) {
         bg,
     );
     let _ = DeleteObject(bg.into());
-    let (count, left, hover, appearance, pose, file_motion, timer, reminder, awake, cue) = with_state(|state| {
+    let (count, left, hover, appearance, pose, file_motion, timer, paw, awake, cue) = with_state(|state| {
         let count = state.files.len();
         let (pose, file_motion) = match state.motion {
             Some((phase, index, _)) => (
@@ -758,7 +803,8 @@ unsafe fn paint(hwnd: HWND) {
         let timer = state.indicators.visible_timer().and_then(PetTimer::display);
         let awake = file_motion.is_some() || bar_open || timer.is_some_and(|(_, running)| running)
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
-        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, state.indicators.reminder, awake, cue)
+        let paw = state.indicators.shows_paw().then_some(matches!(state.indicators.reminder, Some(ReminderMark::Due)));
+        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, paw, awake, cue)
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
     SetMapMode(dc, MM_TEXT);
@@ -772,8 +818,8 @@ unsafe fn paint(hwnd: HWND) {
         HFONT::default()
     };
     let previous_font = (!font.0.is_null()).then(|| SelectObject(dc, font.into()));
-    if let Some(mark) = reminder {
-        reminder_mark(dc, mark, palette);
+    if let Some(due) = paw {
+        paw_badge(dc, due, palette);
     }
     if count > 0 {
         let compact = timer.is_some();
@@ -1007,13 +1053,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
                     let x = lp.0 as i16 as i32 * 96 / dpi;
                     let y = (lp.0 >> 16) as i16 as i32 * 96 / dpi;
-                    if let Some((app, timer)) = with_state(|s| {
+                    if let Some((app, timer, paw)) = with_state(|s| {
                         let r = timer_bounds(!s.files.is_empty());
                         let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-                        (s.app.clone(), s.indicators.visible_timer().filter(|_| hit).map(|timer| (timer.id.clone(), timer.action())))
+                        let paw = PAW_BOUNDS;
+                        let hits_paw = s.indicators.shows_paw()
+                            && x >= paw.left && x < paw.right && y >= paw.top && y < paw.bottom;
+                        (s.app.clone(), s.indicators.visible_timer().filter(|_| hit).map(|timer| (timer.id.clone(), timer.action())), hits_paw)
                     }) {
                         if let Some(timer) = timer {
                             change_pet_timer(app, timer);
+                        } else if paw {
+                            show_todos(&app, hwnd);
                         } else {
                             crate::bar::toggle(&app, hwnd);
                         }
@@ -1032,6 +1083,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let _ = GetCursorPos(&mut p);
             if let Ok(menu) = CreatePopupMenu() {
                 let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools (Ctrl+Alt+P)"));
+                let _ = AppendMenuW(menu, MF_STRING, 8, w!("Show open to-dos"));
                 let _ = AppendMenuW(
                     menu,
                     MF_STRING | MF_DISABLED,
@@ -1061,6 +1113,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 .0;
                 let _ = DestroyMenu(menu);
                 match action {
+                    8 => {
+                        if let Some(app) = with_state(|s| s.app.clone()) {
+                            show_todos(&app, hwnd);
+                        }
+                    }
                     7 => {
                         if let (Some(app), Some(timer)) = (with_state(|s| s.app.clone()), timer) {
                             change_pet_timer(app, timer);
