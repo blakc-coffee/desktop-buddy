@@ -87,52 +87,6 @@ impl Appearance {
             },
         }
     }
-
-    /// Natural anatomical fur and feature palette (strictly separated from UI chrome).
-    pub fn art_palette(self) -> Palette {
-        match self {
-            // Tuxedo Cat: Near-black coat, crisp off-white bib/paws, charcoal nose patch (no pink).
-            Self::Cat => Palette {
-                surface: rgb(246, 244, 238),   // soft ivory/off-white cheeks, bib, paws
-                ink: rgb(26, 26, 30),          // near-black primary coat & tail
-                accent: rgb(52, 50, 56),       // charcoal nose patch & ear depth (no pink fur)
-                outline: rgb(16, 16, 20),      // midnight contour
-                selection: rgb(224, 192, 102), // composed golden eye glint
-            },
-            // Shiba Inu: Red-tan fur, clean cream urajiro, black nose, espresso contours.
-            Self::Dog => Palette {
-                surface: rgb(252, 246, 234),  // urajiro cream cheeks, throat, muzzle
-                ink: rgb(32, 22, 16),         // black cocoa nose & eyes
-                accent: rgb(212, 122, 44),    // red-tan ginger coat
-                outline: rgb(42, 24, 14),     // deep espresso contour
-                selection: rgb(244, 172, 78), // warm amber highlight
-            },
-            // Calico Cat: White breast/paws, asymmetric orange cheek/nose and black cheek.
-            Self::Calico => Palette {
-                surface: rgb(250, 248, 244),   // clean ivory white breast, bib, paws
-                ink: rgb(28, 26, 30),          // asymmetric jet-black cheek patch
-                accent: rgb(226, 120, 48),     // asymmetric warm ginger-orange patch & nose
-                outline: rgb(22, 18, 20),      // dark sable contour
-                selection: rgb(130, 195, 120), // curious emerald eye glint
-            },
-            // Smithsonian Giant Panda: Ivory body/head, velvety black limbs, ears, and tilted eye patches.
-            Self::Panda => Palette {
-                surface: rgb(248, 246, 242),   // clean ivory/white head and belly
-                ink: rgb(24, 24, 26),          // solid black ears, eye patches, and shoulder band
-                accent: rgb(45, 45, 48),       // dark slate nose and paw pads
-                outline: rgb(12, 12, 14),      // pitch black contour
-                selection: rgb(185, 205, 190), // calm bamboo mist sheen
-            },
-            // AKC Siberian Husky: Gray-black saddle/cap, clean white mask/paws, subtle icy eye (no blue fur).
-            Self::Husky => Palette {
-                surface: rgb(248, 250, 254),   // stark arctic white mask, chest, paws
-                ink: rgb(38, 42, 52),          // slate-black cap, mantle, and dorsal saddle
-                accent: rgb(112, 122, 138),    // mid-tone slate gray shading
-                outline: rgb(22, 26, 34),      // midnight slate contour
-                selection: rgb(138, 204, 238), // subtle icy iris (fur remains slate/white)
-            },
-        }
-    }
 }
 
 // ============================================================================
@@ -1831,117 +1785,118 @@ impl Appearance {
 // GDI Safe Canvas
 // ============================================================================
 
+enum ArtPath {
+    Move(i32, i32),
+    Line(i32, i32),
+    Curve(i32, i32, i32, i32, i32, i32),
+    Close,
+}
+
 struct Canvas {
     dc: HDC,
     dpi: i32,
-    orig_pen: HPEN,
-    orig_brush: HBRUSH,
-    pen_edge: HPEN,
-    pen_thin: HPEN,
-    pen_none: HPEN,
 }
 
 impl Canvas {
-    unsafe fn new(dc: HDC, dpi: i32, outline: COLORREF) -> Self {
-        let s2 = ((2 * dpi + 48) / 96).max(1);
-        let s1 = ((1 * dpi + 48) / 96).max(1);
-        let pen_edge = CreatePen(PS_SOLID, s2, outline);
-        let pen_thin = CreatePen(PS_SOLID, s1, outline);
-        let pen_none = CreatePen(PS_NULL, 0, COLORREF(0));
+    fn scaled(&self, tenths: i32) -> i32 {
+        (tenths * self.dpi + 480).div_euclid(960)
+    }
 
-        let orig_pen = HPEN(SelectObject(dc, pen_edge.into()).0);
-        let orig_brush = HBRUSH(SelectObject(dc, GetStockObject(NULL_BRUSH)).0);
-
-        Self {
-            dc,
-            dpi,
-            orig_pen,
-            orig_brush,
-            pen_edge,
-            pen_thin,
-            pen_none,
+    unsafe fn with_paint(
+        &self,
+        fill: Option<COLORREF>,
+        stroke: Option<COLORREF>,
+        width: i32,
+        draw: impl FnOnce(),
+    ) {
+        let brush = fill.map(|color| CreateSolidBrush(color));
+        let pen = stroke.map(|color| CreatePen(PS_SOLID, self.scaled(width).max(1), color));
+        let old_brush = SelectObject(
+            self.dc,
+            brush.map_or_else(|| GetStockObject(NULL_BRUSH), Into::into),
+        );
+        let old_pen = SelectObject(
+            self.dc,
+            pen.map_or_else(|| GetStockObject(NULL_PEN), Into::into),
+        );
+        draw();
+        SelectObject(self.dc, old_pen);
+        SelectObject(self.dc, old_brush);
+        if let Some(pen) = pen {
+            let _ = DeleteObject(pen.into());
+        }
+        if let Some(brush) = brush {
+            let _ = DeleteObject(brush.into());
         }
     }
 
-    #[inline]
-    fn s(&self, v: i32) -> i32 {
-        (v * self.dpi + 48) / 96
+    unsafe fn oval(
+        &self,
+        [l, t, r, b]: [i32; 4],
+        fill: Option<COLORREF>,
+        stroke: Option<COLORREF>,
+        width: i32,
+    ) {
+        self.with_paint(fill, stroke, width, || {
+            let _ = Ellipse(
+                self.dc,
+                self.scaled(l),
+                self.scaled(t),
+                self.scaled(r),
+                self.scaled(b),
+            );
+        });
     }
 
-    unsafe fn fill_oval(&self, l: i32, t: i32, r: i32, b: i32, fill: COLORREF, edge: bool) {
-        let br = CreateSolidBrush(fill);
-        let old_brush = SelectObject(self.dc, br.into());
-        SelectObject(
-            self.dc,
-            if edge { self.pen_edge } else { self.pen_none }.into(),
-        );
-        let _ = Ellipse(self.dc, self.s(l), self.s(t), self.s(r), self.s(b));
-        SelectObject(self.dc, old_brush);
-        let _ = DeleteObject(br.into());
-    }
-
-    unsafe fn fill_poly(&self, pts: &[(i32, i32)], fill: COLORREF, edge: bool) {
-        let gdi_pts: Vec<POINT> = pts
-            .iter()
-            .map(|&(x, y)| POINT {
-                x: self.s(x),
-                y: self.s(y),
-            })
-            .collect();
-        let br = CreateSolidBrush(fill);
-        let old_brush = SelectObject(self.dc, br.into());
-        SelectObject(
-            self.dc,
-            if edge { self.pen_edge } else { self.pen_none }.into(),
-        );
-        let _ = Polygon(self.dc, &gdi_pts);
-        SelectObject(self.dc, old_brush);
-        let _ = DeleteObject(br.into());
-    }
-
-    unsafe fn curve(&self, points: &[(i32, i32)], color: COLORREF, outlined: bool) {
-        let points: Vec<_> = points.iter().map(|&(x, y)| POINT { x: self.s(x), y: self.s(y) }).collect();
-        let brush = CreateSolidBrush(color);
-        let previous_brush = SelectObject(self.dc, brush.into());
-        let previous_pen = SelectObject(self.dc, if outlined { self.pen_edge } else { self.pen_none }.into());
-        let _ = BeginPath(self.dc);
-        let _ = MoveToEx(self.dc, points[0].x, points[0].y, None);
-        let _ = PolyBezierTo(self.dc, &points[1..]);
-        let _ = CloseFigure(self.dc);
-        let _ = EndPath(self.dc);
-        let _ = StrokeAndFillPath(self.dc);
-        SelectObject(self.dc, previous_pen);
-        SelectObject(self.dc, previous_brush);
-        let _ = DeleteObject(brush.into());
-    }
-
-    unsafe fn line(&self, x1: i32, y1: i32, x2: i32, y2: i32) {
-        SelectObject(self.dc, self.pen_thin.into());
-        let pts = [
-            POINT {
-                x: self.s(x1),
-                y: self.s(y1),
-            },
-            POINT {
-                x: self.s(x2),
-                y: self.s(y2),
-            },
-        ];
-        let _ = Polyline(self.dc, &pts);
-    }
-
-    unsafe fn finish(self) {
-        SelectObject(self.dc, self.orig_pen.into());
-        SelectObject(self.dc, self.orig_brush.into());
-        let _ = DeleteObject(self.pen_edge.into());
-        let _ = DeleteObject(self.pen_thin.into());
-        let _ = DeleteObject(self.pen_none.into());
+    unsafe fn path(
+        &self,
+        segments: &[ArtPath],
+        fill: Option<COLORREF>,
+        stroke: Option<COLORREF>,
+        width: i32,
+    ) {
+        self.with_paint(fill, stroke, width, || {
+            let point = |x, y| POINT {
+                x: self.scaled(x),
+                y: self.scaled(y),
+            };
+            let _ = BeginPath(self.dc);
+            for segment in segments {
+                match *segment {
+                    ArtPath::Move(x, y) => {
+                        let _ = MoveToEx(self.dc, self.scaled(x), self.scaled(y), None);
+                    }
+                    ArtPath::Line(x, y) => {
+                        let _ = LineTo(self.dc, self.scaled(x), self.scaled(y));
+                    }
+                    ArtPath::Curve(x1, y1, x2, y2, x, y) => {
+                        let _ = PolyBezierTo(self.dc, &[point(x1, y1), point(x2, y2), point(x, y)]);
+                    }
+                    ArtPath::Close => {
+                        let _ = CloseFigure(self.dc);
+                    }
+                }
+            }
+            let _ = EndPath(self.dc);
+            match (fill.is_some(), stroke.is_some()) {
+                (true, true) => {
+                    let _ = StrokeAndFillPath(self.dc);
+                }
+                (true, false) => {
+                    let _ = FillPath(self.dc);
+                }
+                (false, true) => {
+                    let _ = StrokePath(self.dc);
+                }
+                (false, false) => {
+                    let _ = AbortPath(self.dc);
+                }
+            }
+        });
     }
 }
 
-// ============================================================================
-// Public Drawing Pipeline
-// ============================================================================
+include!("pet_final.rs");
 
 /// Primary entry point for rendering the pet in GDI with native DPI scaling.
 pub unsafe fn draw_pose(
@@ -1967,287 +1922,48 @@ pub unsafe fn draw_pose(
             eM21: -sine,
             eM22: cosine,
             eDx: pixel * (64.0 - 64.0 * cosine + 64.0 * sine + f32::from(pose.offset_x)),
-            eDy: pixel * (64.0 - 64.0 * sine - 64.0 * cosine + f32::from(pose.offset_y)),
+            eDy: pixel
+                * (64.0 - 64.0 * sine - 64.0 * cosine + f32::from(pose.offset_y)
+                    - if hover { 1.0 } else { 0.0 }),
         },
     );
-    let hover = hover || matches!(pose.eye_state, 1 | 3);
-    let pal = appearance.art_palette();
-    let c = Canvas::new(dc, dpi, pal.outline);
 
-    match appearance {
-        // --------------------------------------------------------------------
-        // TUXEDO CAT: Composed & precise. Near-black fur, off-white bib/paws,
-        // charcoal nose patch, dark upright tail. No pink coat.
-        // --------------------------------------------------------------------
-        Appearance::Cat => {
-            // Elegant upright curved tail
-            c.fill_oval(78, 60, 108, 92, pal.ink, true);
-            c.fill_oval(92, 58, 114, 76, pal.ink, true);
-
-            // Torso silhouette
-            c.fill_oval(40, 52, 88, 94, pal.ink, true);
-
-            // Off-white bib chest & front paws
-            c.fill_oval(54, 58, 74, 88, pal.surface, false);
-            c.fill_oval(46, 84, 60, 94, pal.surface, true);
-            c.fill_oval(68, 84, 82, 94, pal.surface, true);
-
-            // Pointed cat ears (ink base, charcoal accent interior - no pink)
-            c.fill_poly(&[(40, 36), (32, 12), (54, 26)], pal.ink, true);
-            c.fill_poly(&[(88, 36), (96, 12), (74, 26)], pal.ink, true);
-            c.fill_poly(&[(38, 32), (35, 17), (50, 26)], pal.accent, false);
-            c.fill_poly(&[(90, 32), (93, 17), (78, 26)], pal.accent, false);
-
-            // Head silhouette
-            c.fill_oval(34, 22, 94, 66, pal.ink, true);
-
-            // Off-white cheeks and clean chevron blaze
-            c.fill_oval(38, 44, 56, 62, pal.surface, false);
-            c.fill_oval(72, 44, 90, 62, pal.surface, false);
-            c.fill_poly(&[(64, 40), (56, 64), (72, 64)], pal.surface, false);
-
-            // Symmetrical crisp whiskers
-            c.line(26, 48, 44, 49);
-            c.line(26, 53, 44, 51);
-            c.line(84, 49, 102, 48);
-            c.line(84, 51, 102, 53);
-
-            // Charcoal nose patch (natural dark marking)
-            c.fill_poly(&[(62, 50), (66, 50), (64, 53)], pal.accent, false);
-            c.line(64, 53, 64, 56);
-
-            // Golden-amber composed eyes with glint or polite hover wink
-            if hover {
-                c.line(47, 43, 55, 41);
-                c.line(55, 41, 47, 39); // wink
-                c.fill_oval(72, 38, 82, 48, pal.selection, true);
-                c.fill_oval(75, 40, 78, 43, pal.surface, false);
-            } else {
-                c.fill_oval(46, 38, 56, 48, pal.selection, true);
-                c.fill_oval(72, 38, 82, 48, pal.selection, true);
-                c.fill_oval(48, 40, 51, 43, pal.surface, false);
-                c.fill_oval(74, 40, 77, 43, pal.surface, false);
-            }
-        }
-
-        // --------------------------------------------------------------------
-        // SHIBA INU: Confident & eager. Red-tan coat, cream urajiro cheeks/chest,
-        // black nose, alert triangular ears, tightly curled tail.
-        // --------------------------------------------------------------------
-        Appearance::Dog => {
-            // Plump curled tail arched up over the hip with cream underside
-            c.fill_oval(78, 46, 106, 74, pal.accent, true);
-            c.fill_oval(84, 52, 98, 66, pal.surface, false);
-
-            // Torso & clean cream urajiro chest
-            c.fill_oval(40, 52, 88, 94, pal.accent, true);
-            c.fill_oval(52, 56, 76, 88, pal.surface, false);
-
-            // Cream front paws
-            c.fill_oval(48, 84, 60, 94, pal.surface, true);
-            c.fill_oval(68, 84, 80, 94, pal.surface, true);
-
-            // Alert pointed ears with soft cream interior
-            c.fill_poly(&[(38, 36), (32, 10), (54, 24)], pal.accent, true);
-            c.fill_poly(&[(90, 36), (96, 10), (74, 24)], pal.accent, true);
-            c.fill_poly(&[(40, 32), (36, 16), (50, 24)], pal.surface, false);
-            c.fill_poly(&[(88, 32), (92, 16), (78, 24)], pal.surface, false);
-
-            // Round chubby cheek head
-            c.fill_oval(34, 22, 94, 66, pal.accent, true);
-
-            // Distinctive cream cheek & muzzle urajiro patches
-            c.fill_oval(36, 40, 58, 64, pal.surface, false);
-            c.fill_oval(70, 40, 92, 64, pal.surface, false);
-            c.fill_oval(50, 44, 78, 65, pal.surface, false);
-
-            // Signature Shiba eyebrow dots
-            c.fill_oval(48, 30, 54, 35, pal.surface, false);
-            c.fill_oval(74, 30, 80, 35, pal.surface, false);
-
-            // Dark cocoa button nose & smiling seam
-            c.fill_oval(60, 48, 68, 54, pal.ink, false);
-            c.line(64, 54, 64, 57);
-
-            // Confident dark eyes / happy squint with playful tongue on hover
-            if hover {
-                c.line(46, 42, 51, 38);
-                c.line(51, 38, 56, 42); // happy squint
-                c.line(72, 42, 77, 38);
-                c.line(77, 38, 82, 42);
-                c.fill_oval(60, 56, 68, 63, rgb(235, 120, 115), false); // small tongue
-            } else {
-                c.fill_oval(47, 39, 55, 47, pal.ink, false);
-                c.fill_oval(73, 39, 81, 47, pal.ink, false);
-                c.fill_oval(49, 41, 52, 43, pal.surface, false);
-                c.fill_oval(75, 41, 78, 43, pal.surface, false);
-            }
-        }
-
-        // --------------------------------------------------------------------
-        // CALICO CAT: Curious & playful. White breast and paws, asymmetric orange
-        // nose/cheek, black opposite cheek patch, ginger-tipped tail.
-        // --------------------------------------------------------------------
-        Appearance::Calico => {
-            let ivory = rgb(255, 246, 226);
-            let shadow = rgb(225, 206, 180);
-            let ginger = rgb(198, 112, 48);
-            let charcoal = rgb(43, 38, 37);
-            let olive = rgb(171, 185, 111);
-
-            // Curled tail wraps around the outside of the seated haunch.
-            c.curve(&[(51, 84), (37, 90), (17, 89), (17, 72), (17, 59), (31, 58), (33, 66), (34, 71), (26, 73), (28, 77), (30, 81), (44, 78), (51, 75)], ginger, true);
-            c.curve(&[(17, 72), (17, 59), (31, 58), (33, 66), (34, 71), (26, 73), (28, 77), (24, 78), (20, 76), (17, 72)], charcoal, false);
-
-            // The turned haunch, upright chest, and close-set forepaws form one silhouette.
-            c.curve(&[(39, 91), (35, 79), (47, 67), (58, 67), (65, 62), (66, 52), (76, 50), (95, 50), (94, 76), (96, 87), (99, 94), (95, 98), (87, 97), (72, 98), (48, 99), (39, 91)], ivory, true);
-            c.curve(&[(41, 89), (38, 81), (47, 72), (58, 72), (66, 73), (68, 78), (62, 81), (55, 88), (52, 93), (45, 92)], ginger, false);
-            c.curve(&[(43, 88), (46, 85), (49, 84), (55, 85), (57, 89), (53, 92), (47, 93), (45, 92), (44, 90), (43, 88)], charcoal, false);
-            c.fill_oval(69, 87, 84, 97, shadow, false);
-            c.fill_oval(72, 87, 85, 96, ivory, true);
-            c.line(89, 76, 89, 91);
-
-            // An offset head and uneven ears keep the pose curious in silhouette.
-            c.curve(&[(48, 39), (45, 30), (43, 16), (46, 13), (51, 12), (59, 21), (64, 24), (72, 21), (82, 22), (87, 23), (94, 18), (100, 12), (103, 15), (106, 20), (103, 35), (101, 41), (112, 56), (99, 67), (82, 70), (64, 72), (44, 64), (44, 52), (44, 47), (46, 42), (48, 39)], ivory, true);
-            c.curve(&[(49, 39), (47, 30), (45, 19), (46, 15), (51, 15), (59, 23), (64, 26), (71, 28), (73, 34), (69, 42), (65, 51), (53, 54), (46, 51), (46, 47), (47, 43), (49, 39)], charcoal, false);
-            c.curve(&[(80, 27), (85, 25), (91, 24), (100, 16), (104, 16), (101, 34), (99, 41), (104, 46), (106, 52), (102, 55), (94, 57), (87, 50), (85, 44), (82, 38), (76, 33), (80, 27)], ginger, false);
-            c.fill_poly(&[(49, 20), (52, 33), (59, 28)], rgb(118, 83, 72), false);
-            c.fill_poly(&[(100, 21), (92, 28), (99, 33)], rgb(232, 159, 108), false);
-
-            c.fill_oval(57, 41, 68, 51, olive, true);
-            c.fill_oval(61, 42, 65, 50, charcoal, false);
-            c.fill_oval(59, 42, 62, 45, ivory, false);
-            if hover {
-                c.line(88, 46, 93, 48);
-                c.line(93, 48, 98, 44);
-            } else {
-                c.fill_oval(87, 40, 98, 50, olive, true);
-                c.fill_oval(91, 41, 95, 49, charcoal, false);
-                c.fill_oval(89, 41, 92, 44, ivory, false);
-            }
-            c.fill_oval(69, 52, 88, 63, shadow, false);
-            c.fill_oval(70, 51, 88, 61, ivory, false);
-            c.fill_poly(&[(76, 53), (82, 53), (79, 57)], rgb(104, 61, 54), false);
-            c.line(79, 57, 79, 59);
-            c.line(79, 59, 83, 60);
-            c.line(53, 55, 40, 52);
-            c.line(54, 59, 41, 61);
-            c.line(98, 56, 112, 53);
-            c.line(98, 60, 110, 62);
-        }
-
-        // --------------------------------------------------------------------
-        // GIANT PANDA: Relaxed & deliberate. Broad white head & body, black
-        // rounded cup ears, tilted eye patches, black shoulder vest and limbs.
-        // --------------------------------------------------------------------
-        Appearance::Panda => {
-            // Broad black shoulder vest and hindquarter depth
-            c.fill_oval(36, 54, 92, 94, pal.ink, true);
-
-            // Clean ivory/white round belly
-            c.fill_oval(46, 58, 82, 92, pal.surface, false);
-
-            // Solid black chunky front limbs & rounded paws
-            c.fill_oval(38, 72, 58, 95, pal.ink, true);
-            c.fill_oval(70, 72, 90, 95, pal.ink, true);
-            c.fill_oval(42, 85, 54, 94, pal.accent, false); // paw pad
-            c.fill_oval(74, 85, 86, 94, pal.accent, false);
-
-            // Broad, distinctively rounded black cup ears set wide on crown
-            c.fill_oval(26, 12, 48, 34, pal.ink, true);
-            c.fill_oval(80, 12, 102, 34, pal.ink, true);
-
-            // Compact broad white head silhouette
-            c.fill_oval(32, 20, 96, 68, pal.surface, true);
-
-            // Distinctive tilted teardrop black eye patches angled inward
-            c.fill_poly(&[(42, 35), (57, 39), (54, 52), (39, 48)], pal.ink, false);
-            c.fill_poly(&[(86, 35), (71, 39), (74, 52), (89, 48)], pal.ink, false);
-
-            // Broad dark nose & calm, gentle mouth seam
-            c.fill_oval(59, 50, 69, 56, pal.ink, false);
-            c.line(64, 56, 64, 59);
-            c.line(60, 59, 68, 59);
-
-            // Calm dark eyes with shiny ivory catchlights or peaceful hover squint
-            if hover {
-                c.line(44, 44, 51, 41);
-                c.line(51, 41, 54, 45); // relaxed squint
-                c.line(84, 44, 77, 41);
-                c.line(77, 41, 74, 45);
-            } else {
-                c.fill_oval(44, 41, 51, 48, pal.outline, false);
-                c.fill_oval(77, 41, 84, 48, pal.outline, false);
-                c.fill_oval(46, 42, 48, 44, pal.surface, false);
-                c.fill_oval(79, 42, 81, 44, pal.surface, false);
-            }
-        }
-
-        // --------------------------------------------------------------------
-        // SIBERIAN HUSKY: Expressive & energetic. Slate-black cap and mantle,
-        // clean white mask/chest/paws, alert pointed ears, tapered brush tail,
-        // subtle icy eyes (no blue fur).
-        // --------------------------------------------------------------------
-        Appearance::Husky => {
-            // Tapered brush tail (slate dorsal coat with white underside plume)
-            c.fill_oval(78, 54, 110, 84, pal.ink, true);
-            c.fill_oval(84, 60, 102, 78, pal.surface, false);
-
-            // Slate-black body saddle with clean arctic white chest
-            c.fill_oval(38, 52, 90, 94, pal.ink, true);
-            c.fill_oval(50, 56, 78, 90, pal.surface, false);
-
-            // Crisp white athletic paws
-            c.fill_oval(46, 84, 60, 94, pal.surface, true);
-            c.fill_oval(68, 84, 82, 94, pal.surface, true);
-
-            // Tall, sharply pointed ears: dark slate outer shell, ivory inner lining
-            c.fill_poly(&[(38, 34), (30, 8), (54, 22)], pal.ink, true);
-            c.fill_poly(&[(90, 34), (98, 8), (74, 22)], pal.ink, true);
-            c.fill_poly(&[(40, 30), (34, 14), (50, 22)], pal.surface, false);
-            c.fill_poly(&[(88, 30), (94, 14), (78, 22)], pal.surface, false);
-
-            // Slate-black head cap silhouette
-            c.fill_oval(34, 22, 94, 66, pal.ink, true);
-
-            // Crisp white Siberian mask (cheek flares & muzzle blaze)
-            c.fill_oval(36, 40, 60, 64, pal.surface, false);
-            c.fill_oval(68, 40, 92, 64, pal.surface, false);
-            c.fill_poly(&[(64, 30), (57, 52), (71, 52)], pal.surface, false);
-            c.fill_oval(52, 46, 76, 64, pal.surface, false);
-
-            // Jet-black nose and energetic muzzle seam
-            c.fill_oval(60, 48, 68, 54, pal.outline, false);
-            c.line(64, 54, 64, 57);
-
-            // Subtle icy blue eyes (iris only; fur remains slate/ivory) & hover pant
-            if hover {
-                c.fill_oval(46, 38, 56, 48, pal.selection, true);
-                c.fill_oval(72, 38, 82, 48, pal.selection, true);
-                c.fill_oval(48, 40, 51, 43, pal.surface, false);
-                c.fill_oval(74, 40, 77, 43, pal.surface, false);
-                // Open energetic panting smile
-                c.fill_oval(60, 56, 68, 63, rgb(238, 128, 120), false);
-            } else {
-                c.fill_oval(46, 38, 56, 48, pal.selection, true);
-                c.fill_oval(72, 38, 82, 48, pal.selection, true);
-                c.fill_oval(48, 40, 51, 43, pal.surface, false);
-                c.fill_oval(74, 40, 77, 43, pal.surface, false);
-            }
-        }
-    }
-
+    SetPolyFillMode(dc, WINDING);
+    let canvas = Canvas { dc, dpi };
+    draw_final_art(&canvas, appearance);
     if file_visible {
+        use ArtPath::*;
         let palette = appearance.palette();
-        c.fill_poly(
-            &[(54, 73), (70, 73), (76, 79), (76, 95), (54, 95)],
-            palette.ink,
-            true,
+        canvas.path(
+            &[
+                Move(540, 730),
+                Line(700, 730),
+                Line(760, 790),
+                Line(760, 950),
+                Line(540, 950),
+                Close,
+            ],
+            Some(palette.ink),
+            Some(palette.outline),
+            20,
         );
-        c.fill_poly(&[(70, 73), (76, 79), (70, 79)], palette.accent, false);
-        c.line(59, 84, 71, 84);
-        c.line(59, 89, 67, 89);
+        canvas.path(
+            &[Move(700, 730), Line(760, 790), Line(700, 790), Close],
+            Some(palette.accent),
+            None,
+            0,
+        );
+        canvas.path(
+            &[
+                Move(590, 840),
+                Line(710, 840),
+                Move(590, 890),
+                Line(670, 890),
+            ],
+            None,
+            Some(palette.outline),
+            10,
+        );
     }
-    c.finish();
     let _ = RestoreDC(dc, saved);
 }

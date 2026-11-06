@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 136">
+  <path d="M78 98 Q106 109 109 91 Q111 79 101 79 Q95 81 100 86 Q102 93 89 92Z" fill="#64778e" stroke="#303c50" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M25 100 Q17 88 28 79 Q39 69 57 71 Q77 68 88 80 L98 95 Q98 108 70 108 Q34 112 25 100Z" fill="#64778e" stroke="#303c50" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M58 77 Q82 77 92 96 Q93 107 67 106 L48 101Z" fill="#f5eee2" stroke="none" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
+  <ellipse cx="36" cy="101" rx="12" ry="5" fill="#f5eee2" stroke="#303c50" stroke-width="1.3" />
+  <ellipse cx="80" cy="104" rx="12" ry="5" fill="#f5eee2" stroke="#303c50" stroke-width="1.3" />
+  <path d="M40 55 L35 29 Q35 25 40 28 L54 37 L76 32 L91 17 Q95 14 96 21 L97 47Z" fill="#64778e" stroke="#303c50" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M40 33 L49 39 42 46ZM90 24 L82 35 93 39Z" fill="#c99079" stroke="none" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M36 60 Q33 45 51 38 Q65 29 83 32 Q100 35 104 50 Q109 69 89 79 Q69 88 48 79 Q38 73 36 60Z" fill="#64778e" stroke="#303c50" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M25 111 Q53 114 103 108 M29 113 L46 115 M88 113 L108 110" fill="none" stroke="#ad9580" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M28 86 L36 80 M30 90 L40 82 M34 92 L43 85" fill="none" stroke="#e4b191" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+  <g transform="translate(70 60)">
+    <path d="M-26-9 Q-16-22 -8-13 L0-1 7-12 Q17-23 26-10 Q32 5 13 12 H-12 Q-28 10-26-9Z" fill="#f5eee2" stroke="none" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M-5-20 L0-8 5-20Z" fill="#aebccc" stroke="none" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M-18-7 Q-13-12-8-7 M8-7Q13-12 18-7" fill="none" stroke="#303c50" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M-4 1 Q0 -1 4 1 L0 5Z" fill="#303c50" stroke="none" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M0 5 Q-2 9-6 7 M0 5 Q2 9 6 7" fill="none" stroke="#303c50" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>
