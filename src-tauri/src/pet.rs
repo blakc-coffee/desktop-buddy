@@ -33,6 +33,7 @@ const PREVIEW: u32 = WM_APP + 19;
 const REFRESH_INDICATORS: u32 = WM_APP + 20;
 const PLAY_CUE: u32 = WM_APP + 21;
 const MOTION_TIMER: usize = 2;
+const COUNTDOWN_TIMER: usize = 3;
 pub const APPEARANCES: [Appearance; 3] = [Appearance::Calico, Appearance::Dog, Appearance::Panda];
 const HOLD_SECS: u64 = 120;
 const WIDTH: i32 = 128;
@@ -61,7 +62,7 @@ struct State {
     press: Option<(POINT, RECT, bool)>,
     hover: bool,
     appearance: Appearance,
-    timer: Option<PetTimer>,
+    indicators: Indicators,
     motion_set: usize,
     motion: Option<(AnimationPhase, usize, bool)>,
     motion_deadline: Option<Instant>,
@@ -556,34 +557,100 @@ unsafe fn persist_position(hwnd: HWND) {
         with_state(|s| save(&s.app, "pet_position", &format!("{},{}", r.left, r.top)));
     }
 }
-#[derive(Clone)]
 struct PetTimer {
     id: String,
-    running: bool,
+    deadline: Instant,
 }
-impl PetTimer {
-    fn action(&self) -> &'static str {
-        if self.running { "pause" } else { "resume" }
+
+#[derive(Default)]
+struct Indicators {
+    timer: Option<PetTimer>,
+    reminder: Option<ReminderMark>,
+}
+
+#[derive(Clone, Copy)]
+enum ReminderMark {
+    Scheduled,
+    Due,
+}
+
+impl Indicators {
+    fn running_timer(&self) -> Option<&PetTimer> {
+        self.timer.as_ref().filter(|timer| timer.deadline > Instant::now())
     }
 }
-fn pet_timer(app: &tauri::AppHandle) -> Option<PetTimer> {
-    let core = app.try_state::<Shared>()?;
-    let db = core.db.lock().ok()?;
-    let mut query = db.prepare("SELECT payload FROM items WHERE kind = 'timer' ORDER BY created DESC").ok()?;
-    let timers = query.query_map([], |r| r.get::<_, String>(0)).ok()?;
-    let mut paused = None;
-    for timer in timers.filter_map(Result::ok).filter_map(|s| serde_json::from_str::<Item>(&s).ok()) {
-        if timer.state == "running" {
-            return Some(PetTimer { id: timer.id, running: true });
+
+fn read_indicators(app: &tauri::AppHandle) -> Indicators {
+    let read = || -> Option<Indicators> {
+        let core = app.try_state::<Shared>()?;
+        let db = core.db.lock().ok()?;
+        let mut query = db.prepare(
+            "SELECT payload FROM items WHERE kind IN ('timer', 'reminder', 'attention') ORDER BY created DESC",
+        ).ok()?;
+        let items = query.query_map([], |row| row.get::<_, String>(0)).ok()?;
+        let mut indicators = Indicators::default();
+        for item in items.filter_map(Result::ok).filter_map(|payload| serde_json::from_str::<Item>(&payload).ok()) {
+            match item.kind.as_str() {
+                "timer" if item.state == "running" && indicators.timer.is_none() => {
+                    let left = remaining(&item, now(), ticks(), &core.run);
+                    if left > 0 {
+                        indicators.timer = Some(PetTimer {
+                            id: item.id,
+                            deadline: Instant::now() + Duration::from_millis(left as u64),
+                        });
+                    }
+                }
+                "reminder" if !item.done && indicators.reminder.is_none() => {
+                    indicators.reminder = Some(ReminderMark::Scheduled);
+                }
+                "attention" if !item.done && item.source == "Reminder due" => {
+                    indicators.reminder = Some(ReminderMark::Due);
+                }
+                _ => {}
+            }
         }
-        if paused.is_none() && timer.state == "paused" {
-            paused = Some(PetTimer { id: timer.id, running: false });
-        }
-    }
-    paused
+        Some(indicators)
+    };
+    read().unwrap_or_default()
 }
+
+unsafe fn update_countdown_tick(hwnd: HWND, indicators: &Indicators) {
+    let _ = KillTimer(Some(hwnd), COUNTDOWN_TIMER);
+    if IsWindowVisible(hwnd).as_bool() && indicators.running_timer().is_some() {
+        let _ = SetTimer(Some(hwnd), COUNTDOWN_TIMER, 1000, None);
+    }
+}
+
+fn countdown_label(seconds: u64) -> String {
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
 fn timer_bounds(has_files: bool) -> RECT {
-    RECT { left: if has_files { 64 } else { 9 }, top: 111, right: 119, bottom: 132 }
+    RECT { left: if has_files { 51 } else { 9 }, top: 111, right: 119, bottom: 132 }
+}
+
+unsafe fn reminder_mark(dc: HDC, mark: ReminderMark, palette: pet_art::Palette) {
+    let (surface, ink) = match mark {
+        ReminderMark::Scheduled => (palette.surface, palette.accent),
+        ReminderMark::Due => (palette.accent, palette.surface),
+    };
+    badge(dc, RECT { left: 5, top: 6, right: 25, bottom: 26 }, "", surface, ink);
+    let pen = CreatePen(PS_SOLID, 1, ink);
+    let previous = SelectObject(dc, pen.into());
+    let _ = Polyline(dc, &[
+        POINT { x: 10, y: 19 }, POINT { x: 12, y: 16 }, POINT { x: 12, y: 13 },
+        POINT { x: 14, y: 11 }, POINT { x: 16, y: 11 }, POINT { x: 18, y: 13 },
+        POINT { x: 18, y: 16 }, POINT { x: 20, y: 19 }, POINT { x: 10, y: 19 },
+    ]);
+    let _ = MoveToEx(dc, 14, 21, None);
+    let _ = LineTo(dc, 17, 21);
+    SelectObject(dc, previous);
+    let _ = DeleteObject(pen.into());
 }
 unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: COLORREF) {
     let fill = CreateSolidBrush(surface);
@@ -593,16 +660,18 @@ unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: CO
     SelectObject(dc, old_pen);
     SelectObject(dc, old_brush);
     let _ = DeleteObject(fill.into());
+    if label.is_empty() {
+        return;
+    }
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, ink);
     let mut text = wide(label);
     let len = text.len() - 1;
     DrawTextW(dc, &mut text[..len], &mut rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 }
-fn act_on_timer(app: tauri::AppHandle, timer: PetTimer) {
-    let action = timer.action().to_owned();
+fn pause_pet_timer(app: tauri::AppHandle, id: String) {
     if let Some(core) = app.try_state::<Shared>() {
-        let _ = timer_action(app.clone(), core, timer.id, action);
+        let _ = timer_action(app.clone(), core, id, "pause".into());
     }
 }
 unsafe fn paint(hwnd: HWND) {
@@ -624,7 +693,7 @@ unsafe fn paint(hwnd: HWND) {
         bg,
     );
     let _ = DeleteObject(bg.into());
-    let (count, left, hover, appearance, pose, file_motion, timer, awake, cue) = with_state(|state| {
+    let (count, left, hover, appearance, pose, file_motion, timer, reminder, awake, cue) = with_state(|state| {
         let count = state.files.len();
         let (pose, file_motion) = match state.motion {
             Some((phase, index, _)) => (
@@ -645,31 +714,29 @@ unsafe fn paint(hwnd: HWND) {
             _ => None,
         });
         let bar_open = state.control.status.lock().is_ok_and(|status| status.command_bar_visible);
-        let awake = file_motion.is_some() || bar_open || state.timer.as_ref().is_some_and(|timer| timer.running)
+        let timer = state.indicators.running_timer().map(|timer| seconds(Some(timer.deadline)));
+        let awake = file_motion.is_some() || bar_open || timer.is_some()
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
-        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, state.timer.clone(), awake, cue)
+        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, state.indicators.reminder, awake, cue)
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
     SetMapMode(dc, MM_TEXT);
     pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_motion, awake, cue);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
+    if let Some(mark) = reminder {
+        reminder_mark(dc, mark, palette);
+    }
     if count > 0 {
         let compact = timer.is_some();
-        let label = if compact { format!("{count} / {left}s") } else { format!("{count} held / {left}s") };
-        badge(dc, RECT { left: 9, top: 111, right: if compact { 61 } else { 119 }, bottom: 132 },
+        let label = if compact { format!("{left}s") } else { format!("{count} held / {left}s") };
+        badge(dc, RECT { left: 9, top: 111, right: if compact { 48 } else { 119 }, bottom: 132 },
             &label, palette.surface, palette.ink);
     }
-    if let Some(timer) = timer {
-        let label = match (timer.running, count > 0) {
-            (true, true) => "Pause",
-            (false, true) => "Resume",
-            (true, false) => "Pause timer",
-            (false, false) => "Resume timer",
-        };
-        let (surface, ink) = if timer.running { (palette.accent, palette.surface) }
-            else { (palette.surface, palette.ink) };
-        badge(dc, timer_bounds(count > 0), label, surface, ink);
+    if let Some(left) = timer.filter(|left| *left > 0) {
+        let time = countdown_label(left);
+        let label = if count > 0 { time } else { format!("Ⅱ  {time}") };
+        badge(dc, timer_bounds(count > 0), &label, palette.accent, palette.surface);
     }
     let _ = EndPaint(hwnd, &ps);
 }
@@ -709,6 +776,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 });
                 advance_motion(hwnd, state, next);
             });
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == COUNTDOWN_TIMER => {
+            with_state(|s| {
+                if s.indicators.running_timer().is_none() {
+                    let _ = KillTimer(Some(hwnd), COUNTDOWN_TIMER);
+                }
+            });
+            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_TIMER if wp.0 == 1 => {
@@ -771,7 +847,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         REFRESH_INDICATORS => {
-            with_state(|s| s.timer = pet_timer(&s.app));
+            with_state(|s| {
+                s.indicators = read_indicators(&s.app);
+                update_countdown_tick(hwnd, &s.indicators);
+            });
             let _ = InvalidateRect(Some(hwnd), None, false);
             crate::bar::repaint_theme();
             LRESULT(0)
@@ -783,6 +862,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 clamp(hwnd, false);
             }
             with_state(|s| {
+                update_countdown_tick(hwnd, &s.indicators);
                 if !visible {
                     advance_motion(hwnd, s, None);
                 }
@@ -877,10 +957,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     if let Some((app, timer)) = with_state(|s| {
                         let r = timer_bounds(!s.files.is_empty());
                         let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-                        (s.app.clone(), s.timer.clone().filter(|_| hit))
+                        (s.app.clone(), s.indicators.running_timer().filter(|_| hit).map(|timer| timer.id.clone()))
                     }) {
                         if let Some(timer) = timer {
-                            act_on_timer(app, timer);
+                            pause_pet_timer(app, timer);
                         } else {
                             crate::bar::toggle(&app, hwnd);
                         }
@@ -907,10 +987,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 );
                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
                 let _ = AppendMenuW(menu, MF_STRING, 6, w!("Copy held files (then paste)"));
-                let timer = with_state(|s| s.timer.clone()).flatten();
-                if let Some(timer) = &timer {
-                    let label = if timer.running { w!("Pause timer") } else { w!("Resume timer") };
-                    let _ = AppendMenuW(menu, MF_STRING, 7, label);
+                let timer = with_state(|s| s.indicators.running_timer().map(|timer| timer.id.clone())).flatten();
+                if timer.is_some() {
+                    let _ = AppendMenuW(menu, MF_STRING, 7, w!("Pause timer"));
                 }
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
                 let _ = AppendMenuW(menu, MF_STRING, 4, w!("Reset position"));
@@ -930,7 +1009,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 match action {
                     7 => {
                         if let (Some(app), Some(timer)) = (with_state(|s| s.app.clone()), timer) {
-                            act_on_timer(app, timer);
+                            pause_pet_timer(app, timer);
                         }
                     }
                     6 => {
@@ -1015,7 +1094,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                 .unwrap_or_default();
             STATE.with(|s| {
                 *s.borrow_mut() = Some(State {
-                    timer: pet_timer(&app),
+                    indicators: read_indicators(&app),
                     app: app.clone(),
                     control: output.clone(),
                     files: vec![],
@@ -1079,6 +1158,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
             RegisterDragDrop(hwnd, &target)?;
             let enabled = visible && setting(&app, "pet_visible").as_deref() != Some("false");
             let _ = ShowWindow(hwnd, if enabled { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            with_state(|s| update_countdown_tick(hwnd, &s.indicators));
             output.hwnd.store(hwnd.0 as isize, Ordering::Relaxed);
             output.status.lock().unwrap().visible = enabled;
             Ok(hwnd)

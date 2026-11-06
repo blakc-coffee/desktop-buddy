@@ -29,7 +29,7 @@ Quit an older Buddy instance from its tray menu before launching a newer executa
 | `/tools` | Open the detailed tools window |
 | `/copy` | Copy the file references currently held by the pet |
 
-Timer and reminder commands accept 1–1440 whole minutes. Click the highlighted **Pause timer** badge on the pet to pause it, and **Resume timer** to continue. `/tools` and `/copy` are available when typed directly. Search shows the matching name, type, and location. It covers connected Windows drive roots and other configured roots within a bounded scan. Results can be partial.
+Timer and reminder commands accept 1–1440 whole minutes. The pet shows the remaining time while a timer runs. Click the countdown to pause, then use **Tasks → Timers** to resume. A small bell marks a scheduled reminder and highlights when a reminder is due. `/tools` and `/copy` are available when typed directly. Search shows the matching name, type, and location. It covers connected Windows drive roots and other configured roots within a bounded scan. Results can be partial.
 
 ## Hand off files
 
