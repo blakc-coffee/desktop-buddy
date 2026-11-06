@@ -26,14 +26,14 @@ const DONE: u32 = WM_APP + 30;
 const COPIED: u32 = WM_APP + 31;
 const OUTSIDE_CLICK: u32 = WM_APP + 32;
 const WIDTH: i32 = 460;
+const FILE_WIDTH: i32 = 680;
 const HEIGHT: i32 = 48;
-const FOOTER_HEIGHT: i32 = 28;
-const ROW_HEIGHT: i32 = 35;
+const ROW_HEIGHT: i32 = 40;
 const VISIBLE_ROWS: usize = 5;
-const RAIL_WIDTH: i32 = 72;
-const RAIL_HEIGHT: i32 = 120;
-const RAIL_ROW: i32 = 30;
-const RAIL_ACTIONS: [(&str, &str); 3] = [("Find", "/f "), ("Focus", "/t "), ("Pet", "/pet")];
+const RAIL_WIDTH: i32 = 40;
+const RAIL_HEIGHT: i32 = 152;
+const RAIL_ROW: i32 = 48;
+const RAIL_ACTIONS: [(&str, &str); 3] = [("⌕", "/f "), ("◷", "/t "), ("Pet", "/pet")];
 #[derive(Clone)]
 enum Action {
     Input(String),
@@ -80,6 +80,12 @@ struct Bar {
     dpi: u32,
     composing: bool,
     finder: bool,
+    file_search: bool,
+}
+impl Bar {
+    fn visible_rows(&self) -> usize {
+        if self.file_search { 8 } else { VISIBLE_ROWS }
+    }
 }
 thread_local! {static BAR:RefCell<Option<Bar>>=const{RefCell::new(None)};}
 fn wide(s: &str) -> Vec<u16> {
@@ -92,15 +98,19 @@ fn change<T>(f: impl FnOnce(&mut Bar) -> T) -> Option<T> {
     BAR.with(|s| s.borrow_mut().as_mut().map(f))
 }
 unsafe fn note(text: &str) {
-    if let Some((hwnd, status)) = get(|b| (b.hwnd, b.status)) {
+    if let Some((hwnd, edit, status)) = get(|b| (b.hwnd, b.edit, b.status)) {
         let value = wide(text);
-        let _ = SetWindowTextW(status, PCWSTR(value.as_ptr()));
+        let empty = GetWindowTextLengthW(edit) == 0;
+        let cue = wide(if empty { text } else { "" });
+        SendMessageW(edit, 0x1501, Some(WPARAM(1)), Some(LPARAM(cue.as_ptr() as isize)));
+        let inline = !empty && !text.is_empty();
+        let _ = SetWindowTextW(status, if inline { PCWSTR(value.as_ptr()) } else { w!("") });
         let _ = ShowWindow(
             status,
-            if text.is_empty() {
-                SW_HIDE
-            } else {
+            if inline {
                 SW_SHOWNOACTIVATE
+            } else {
+                SW_HIDE
             },
         );
         layout(hwnd);
@@ -149,20 +159,33 @@ fn projects(app: &tauri::AppHandle) -> Vec<Item> {
 unsafe fn refresh() {
     let text = contents();
     get(|b| b.search.generation.fetch_add(1, Ordering::Relaxed));
-    change(|b| b.finder = false);
+    change(|b| {
+        b.finder = false;
+        b.file_search = false;
+    });
+    if text.is_empty() {
+        choices(
+            commands::suggestions("").into_iter()
+                .map(|(hint, completion)| (hint.into(), Action::Complete(completion)))
+                .collect(),
+        );
+        change(|b| b.selected = usize::MAX);
+        note("");
+        return;
+    }
     let command = if !text.trim().is_empty() && !text.trim_start().starts_with('/') {
         Ok(Parsed::Find(text.trim().into()))
     } else {
         commands::parse(&text)
     };
     if let Some((_, hint, completion)) = commands::definitions().into_iter().find(|(aliases, _, completion)| {
-        completion.ends_with(' ') && aliases.iter().any(|alias| text.trim().eq_ignore_ascii_case(alias))
+        *completion != "/f " && completion.ends_with(' ') && aliases.iter().any(|alias| text.trim().eq_ignore_ascii_case(alias))
     }) {
         choices(vec![(String::new(), Action::Complete(completion))]);
         note(hint);
         return;
     }
-    if !matches!(command, Ok(Parsed::Tools | Parsed::Copy | Parsed::Pets)) {
+    if !matches!(command, Ok(Parsed::Tools | Parsed::Copy | Parsed::Pets | Parsed::Find(_))) {
         let suggestions = commands::suggestions(&text);
         if !suggestions.is_empty() {
             choices(
@@ -178,11 +201,14 @@ unsafe fn refresh() {
         Ok(Parsed::Help) => {
             choices(vec![]);
             if text.trim().eq_ignore_ascii_case("/help") {
-                note("/t /d /r /f /w /copy /tools");
+                note("/t /d /r /f /w /pet");
             }
         }
         Ok(Parsed::Find(q)) => {
-            change(|b| b.finder = true);
+            change(|b| {
+                b.finder = true;
+                b.file_search = true;
+            });
             if q.chars().count() >= 2 {
                 search(q.to_lowercase());
             } else {
@@ -516,40 +542,41 @@ fn tool_matches(query: &str) -> Vec<(String, Action)> {
 unsafe fn layout(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let s = |v: i32| v * dpi as i32 / 96;
-    let Some((edit, status, pet, rows)) = get(|b| {
-        (b.edit, b.status, b.pet, if b.finder { b.choices.len().min(VISIBLE_ROWS) } else { 0 })
+    let Some((edit, status, pet, rows, file_search)) = get(|b| {
+        (b.edit, b.status, b.pet, if b.finder { b.choices.len().min(b.visible_rows()) } else { 0 }, b.file_search)
     }) else {
         return;
     };
     let has_note = GetWindowTextLengthW(status) > 0;
     let mut rect = RECT::default();
     let _ = GetClientRect(hwnd, &mut rect);
-    let content_height = HEIGHT + rows as i32 * ROW_HEIGHT;
-    let height = content_height + if has_note { FOOTER_HEIGHT } else if rows > 0 { 8 } else { 0 };
+    let height = HEIGHT + rows as i32 * ROW_HEIGHT + if rows > 0 { 8 } else { 0 };
     let pet_dpi = GetDpiForWindow(pet).max(96) as i32;
-    if rect.bottom != height * pet_dpi / 96 {
-        position(hwnd, pet, height);
+    let width = if file_search { FILE_WIDTH } else { WIDTH };
+    if rect.bottom != height * pet_dpi / 96 || rect.right != fitted_width(pet, width) {
+        position(hwnd, pet, width, height);
         let _ = GetClientRect(hwnd, &mut rect);
         let _ = InvalidateRect(Some(hwnd), None, true);
     }
     let width = rect.right;
     let start = s(43);
     let end = width - s(16);
+    let status_width = if has_note { s(190).min(width / 2) } else { 0 };
     let _ = SetWindowPos(
         edit,
         None,
         start,
         s(14),
-        (end - start).max(1),
+        (end - start - status_width).max(1),
         s(22),
         SWP_NOZORDER,
     );
     let _ = SetWindowPos(
         status,
         None,
-        s(16),
-        s(content_height + 4),
-        (end - s(16)).max(1),
+        end - status_width + s(8),
+        s(14),
+        (status_width - s(8)).max(1),
         s(22),
         SWP_NOZORDER,
     );
@@ -591,6 +618,25 @@ unsafe fn layout(hwnd: HWND) {
         }
     }
 }
+unsafe fn browse(forward: bool) -> bool {
+    let changed = change(|bar| {
+        let count = bar.choices.len();
+        if count == 0 {
+            return false;
+        }
+        bar.selected = if bar.selected >= count {
+            if forward { 0 } else { count - 1 }
+        } else {
+            (bar.selected + if forward { 1 } else { count - 1 }) % count
+        };
+        true
+    }).unwrap_or(false);
+    if changed {
+        show_choice();
+    }
+    changed
+}
+
 unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_IME_STARTCOMPOSITION {
         change(|b| b.composing = true);
@@ -599,6 +645,9 @@ unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
         change(|b| b.composing = false);
     }
     let composing = get(|b| b.composing).unwrap_or(false);
+    if msg == WM_MOUSEWHEEL && !composing && browse(((wp.0 >> 16) as i16) < 0) {
+        return LRESULT(0);
+    }
     if msg == WM_CHAR && !composing && matches!(wp.0, 9 | 13 | 27) {
         return LRESULT(0);
     }
@@ -621,18 +670,7 @@ unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 return LRESULT(0);
             }
             x if x == VK_DOWN.0 || x == VK_UP.0 => {
-                let changed = change(|b| {
-                    let count = b.choices.len();
-                    if count < 2 {
-                        return false;
-                    }
-                    let step = if x == VK_DOWN.0 { 1 } else { count - 1 };
-                    b.selected = (b.selected + step) % count;
-                    true
-                })
-                .unwrap_or(false);
-                if changed {
-                    show_choice();
+                if browse(x == VK_DOWN.0) {
                     return LRESULT(0);
                 }
             }
@@ -676,8 +714,9 @@ unsafe fn paint(hwnd: HWND) {
             SelectObject(dc, previous_font);
             return;
         }
-        let first = bar.selected / VISIBLE_ROWS * VISIBLE_ROWS;
-        for (index, (label, action)) in bar.choices.iter().enumerate().skip(first).take(VISIBLE_ROWS) {
+        let visible_rows = bar.visible_rows();
+        let first = bar.selected / visible_rows * visible_rows;
+        for (index, (label, action)) in bar.choices.iter().enumerate().skip(first).take(visible_rows) {
             let top = HEIGHT + (index - first) as i32 * ROW_HEIGHT;
             let mut bounds = RECT {
                 left: scale(12),
@@ -709,9 +748,19 @@ unsafe fn paint(hwnd: HWND) {
                 _ => "›",
             };
             let mut icon: Vec<_> = symbol.encode_utf16().collect();
-            let mut icon_bounds = RECT { right: bounds.left + scale(30), ..bounds };
-            DrawTextW(dc, &mut icon, &mut icon_bounds, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-            bounds.left += scale(33);
+            let icon_top = (bounds.top + bounds.bottom - scale(28)) / 2;
+            let mut icon_bounds = RECT {
+                left: bounds.left, top: icon_top, right: bounds.left + scale(28), bottom: icon_top + scale(28),
+            };
+            let chip = CreateSolidBrush(palette.selection);
+            let previous_brush = SelectObject(dc, chip.into());
+            let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+            let _ = Ellipse(dc, icon_bounds.left, icon_bounds.top, icon_bounds.right, icon_bounds.bottom);
+            SelectObject(dc, previous_pen);
+            SelectObject(dc, previous_brush);
+            let _ = DeleteObject(chip.into());
+            DrawTextW(dc, &mut icon, &mut icon_bounds, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+            bounds.left += scale(40);
             if let Some((name, detail)) = label.split_once("  ·  ") {
                 let mut title_rect = RECT { bottom: bounds.top + scale(16), ..bounds };
                 let mut title: Vec<_> = name.encode_utf16().collect();
@@ -744,9 +793,11 @@ unsafe extern "system" fn rail_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             let palette = pet::appearance().palette();
             let background = CreateSolidBrush(palette.surface);
             let border = CreatePen(PS_SOLID, 1, palette.outline);
+            let mut client = RECT::default();
+            let _ = GetClientRect(hwnd, &mut client);
+            let _ = FillRect(dc, &client, HBRUSH(GetStockObject(BLACK_BRUSH).0));
             let old_brush = SelectObject(dc, background.into());
             let old_pen = SelectObject(dc, border.into());
-            let _ = RoundRect(dc, 0, 0, s(RAIL_WIDTH), s(RAIL_HEIGHT), s(16), s(16));
             if let Some((font, app)) = get(|bar| (bar.font, bar.app.clone())) {
                 let old_font = SelectObject(dc, font.into());
                 SetBkMode(dc, TRANSPARENT);
@@ -757,26 +808,23 @@ unsafe extern "system" fn rail_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                         items.iter().any(|item| item.kind == "todo" && !item.done),
                     )).unwrap_or_default();
                 for (index, (label, _)) in RAIL_ACTIONS.iter().enumerate() {
-                    let top = 5 + index as i32 * RAIL_ROW;
+                    let top = 4 + index as i32 * RAIL_ROW;
+                    let bottom = top + 36;
+                    let _ = Ellipse(dc, s(2), s(top), s(38), s(bottom));
                     let mut text: Vec<_> = label.encode_utf16().collect();
                     SetTextColor(dc, if index == 1 && timer { palette.accent } else { palette.ink });
                     DrawTextW(dc, &mut text, &mut RECT {
-                        left: s(7), top: s(top), right: s(RAIL_WIDTH - 7), bottom: s(top + RAIL_ROW),
+                        left: s(2), top: s(top), right: s(38), bottom: s(bottom),
                     }, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
                 }
                 let badge = CreateSolidBrush(palette.accent);
                 SelectObject(dc, badge.into());
                 SelectObject(dc, GetStockObject(NULL_PEN));
                 if timer {
-                    let _ = Ellipse(dc, s(60), s(46), s(65), s(51));
+                    let _ = Ellipse(dc, s(29), s(56), s(36), s(63));
                 }
                 if tasks {
-                    let _ = Ellipse(dc, s(15), s(105), s(20), s(110));
-                    SetTextColor(dc, palette.accent);
-                    let mut label: Vec<_> = "To-do".encode_utf16().collect();
-                    DrawTextW(dc, &mut label, &mut RECT {
-                        left: s(24), top: s(96), right: s(67), bottom: s(117),
-                    }, DT_SINGLELINE | DT_VCENTER);
+                    let _ = Ellipse(dc, s(29), s(104), s(36), s(111));
                 }
                 SelectObject(dc, background.into());
                 let _ = DeleteObject(badge.into());
@@ -791,8 +839,10 @@ unsafe extern "system" fn rail_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         }
         WM_LBUTTONUP => {
             let y = (lp.0 >> 16) as i16 as i32 * 96 / GetDpiForWindow(hwnd).max(96) as i32;
-            if (5..5 + RAIL_ACTIONS.len() as i32 * RAIL_ROW).contains(&y) {
-                let (_, command) = RAIL_ACTIONS[((y - 5) / RAIL_ROW) as usize];
+            if y >= 4 && (y - 4) % RAIL_ROW < 36 {
+                let Some((_, command)) = RAIL_ACTIONS.get(((y - 4) / RAIL_ROW) as usize) else {
+                    return LRESULT(0);
+                };
                 fill(command);
                 if let Some((bar, edit)) = get(|b| (b.hwnd, b.edit)) {
                     let _ = SetForegroundWindow(bar);
@@ -811,6 +861,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             hide();
             LRESULT(0)
         }
+        WM_MOUSEWHEEL => {
+            browse(((wp.0 >> 16) as i16) < 0);
+            LRESULT(0)
+        }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -819,7 +873,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let dpi = GetDpiForWindow(hwnd).max(96) as i32;
             let y = (lp.0 >> 16) as i16 as i32 * 96 / dpi;
             if y >= HEIGHT && change(|bar| {
-                let first = bar.selected / VISIBLE_ROWS * VISIBLE_ROWS;
+                let visible_rows = bar.visible_rows();
+                let first = bar.selected / visible_rows * visible_rows;
                 let index = first + ((y - HEIGHT) / ROW_HEIGHT) as usize;
                 if bar.finder && index < bar.choices.len() {
                     bar.selected = index;
@@ -908,7 +963,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }).map(|result| {
                     let parent = Path::new(&result.path).parent()
                         .map(|path| path.display().to_string()).unwrap_or_default();
-                    let kind = if result.folder { "Folder" } else { "File" };
+                    let kind = if result.folder {
+                        "Folder".to_owned()
+                    } else {
+                        Path::new(&result.path).extension().and_then(|value| value.to_str())
+                            .filter(|value| !value.is_empty())
+                            .map(|value| format!("{} file", value.to_ascii_uppercase()))
+                            .unwrap_or_else(|| "File".into())
+                    };
                     let label = format!("{}  ·  {kind}  ·  {parent}", result.name);
                     let action = if result.folder { Action::Open(result.path) } else { Action::OpenFile(result.path) };
                     (label, action)
@@ -1039,10 +1101,13 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
             ..Default::default()
         });
         let rail = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
             rail_class, w!("Buddy actions"), WS_POPUP, 0, 0, RAIL_WIDTH, RAIL_HEIGHT,
             None, None, Some(instance.into()), None,
         ).unwrap_or_default();
+        if !rail.0.is_null() {
+            let _ = SetLayeredWindowAttributes(rail, COLORREF(0), 255, LWA_COLORKEY);
+        }
         BAR.with(|s| {
             *s.borrow_mut() = Some(Bar {
                 app: app.clone(),
@@ -1060,16 +1125,16 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 dpi: 0,
                 composing: false,
                 finder: false,
+                file_search: false,
             })
         });
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);
-        let cue = w!("Search files or browse commands");
-        SendMessageW(edit, 0x1501, Some(WPARAM(1)), Some(LPARAM(cue.0 as isize)));
     }
     let Some((hwnd, edit, rail)) = get(|b| (b.hwnd, b.edit, b.rail)) else {
         return;
     };
-    position(hwnd, pet, HEIGHT);
+    fill("");
+    position(hwnd, pet, WIDTH, HEIGHT);
     layout(hwnd);
     refresh();
     let _ = ShowWindow(hwnd, SW_SHOW);
@@ -1084,19 +1149,28 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     crate::pet::bar_visibility(app, IsWindowVisible(hwnd).as_bool());
 }
 
-unsafe fn position(hwnd: HWND, pet: HWND, height: i32) {
-    let mut anchor = RECT::default();
-    let _ = GetWindowRect(pet, &mut anchor);
-    let dpi = GetDpiForWindow(pet).max(96) as i32;
-    let height = height * dpi / 96;
+unsafe fn work_area(pet: HWND) -> RECT {
     let monitor = MonitorFromWindow(pet, MONITOR_DEFAULTTONEAREST);
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
     let _ = GetMonitorInfoW(monitor, &mut info);
-    let r = info.rcWork;
-    let width = (WIDTH * dpi / 96).min((r.right - r.left).max(1));
+    info.rcWork
+}
+
+unsafe fn fitted_width(pet: HWND, width: i32) -> i32 {
+    let area = work_area(pet);
+    (width * GetDpiForWindow(pet).max(96) as i32 / 96).min((area.right - area.left).max(1))
+}
+
+unsafe fn position(hwnd: HWND, pet: HWND, width: i32, height: i32) {
+    let mut anchor = RECT::default();
+    let _ = GetWindowRect(pet, &mut anchor);
+    let dpi = GetDpiForWindow(pet).max(96) as i32;
+    let height = height * dpi / 96;
+    let r = work_area(pet);
+    let width = fitted_width(pet, width);
     let x = ((anchor.left + anchor.right - width) / 2).clamp(r.left, (r.right - width).max(r.left));
     let y = if anchor.bottom + 6 + height <= r.bottom {
         anchor.bottom + 6
@@ -1125,10 +1199,5 @@ unsafe fn position(hwnd: HWND, pet: HWND, height: i32) {
         let rail_y = ((anchor.top + anchor.bottom - rh) / 2)
             .clamp(r.top, (r.bottom - rh).max(r.top));
         let _ = SetWindowPos(rail, Some(HWND_TOPMOST), rail_x, rail_y, rw, rh, SWP_NOACTIVATE);
-        let radius = 16 * dpi / 96;
-        let region = CreateRoundRectRgn(0, 0, rw, rh, radius, radius);
-        if SetWindowRgn(rail, Some(region), true) == 0 {
-            let _ = DeleteObject(region.into());
-        }
     }
 }

@@ -9,7 +9,7 @@ use std::{
 use tauri::Manager;
 
 const REPARSE_POINT: u32 = 0x400;
-pub const MAX_RESULTS: usize = 8;
+pub const MAX_RESULTS: usize = 40;
 
 pub fn roots(app: &tauri::AppHandle, saved: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let paths = app.path();
