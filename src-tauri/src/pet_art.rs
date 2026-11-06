@@ -111,6 +111,53 @@ pub enum AnimationPhase {
     Pickup,
     Held,
     Release,
+    Activity(Cue),
+}
+
+/// A short reaction to an actual user action or committed outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum Cue {
+    Wake, Settle, FileExpired, FileOpened, FocusStart, FocusPause, FocusResume,
+    FocusDone, TodoSaved, TodoDone, ReminderSaved, ReminderDue, AgentStarted,
+    AgentDone, AgentAttention,
+}
+
+impl Cue {
+    pub const ALL: [Self; 15] = [
+        Self::Wake, Self::Settle, Self::FileExpired, Self::FileOpened, Self::FocusStart,
+        Self::FocusPause, Self::FocusResume, Self::FocusDone, Self::TodoSaved, Self::TodoDone,
+        Self::ReminderSaved, Self::ReminderDue, Self::AgentStarted, Self::AgentDone,
+        Self::AgentAttention,
+    ];
+
+    pub fn frames(self) -> &'static [PoseKeyframe] {
+        use Cue::*;
+        match self {
+            Wake => const { &[beat(65, 0, -2, -3, 101), beat(105, 0, -4, 0, 102), beat(75, 0, -1, 0, 100)] },
+            Settle => const { &[beat(85, 0, 0, 0, 100), beat(115, 0, 2, 0, 98)] },
+            FileExpired => const { &[beat(105, 0, 1, 4, 99), beat(110, 0, 2, 0, 98)] },
+            FileOpened => const { &[beat(75, 3, -1, 6, 100), beat(110, 1, 0, 2, 100)] },
+            FocusStart => const { &[beat(80, 0, 2, 0, 98), beat(140, 0, -3, 0, 103)] },
+            FocusPause => const { &[beat(105, 0, 1, -4, 99), beat(125, 0, 3, 0, 98)] },
+            FocusResume => const { &[beat(75, 0, 1, 2, 98), beat(120, 0, -3, 0, 102)] },
+            FocusDone => const { &[beat(60, 0, 2, 0, 97), beat(110, 0, -5, -4, 103), beat(85, 0, 0, 1, 100)] },
+            TodoSaved => const { &[beat(80, 0, 2, 5, 100), beat(85, 0, 0, 1, 100)] },
+            TodoDone => const { &[beat(70, 0, -3, -4, 101), beat(75, 0, 1, 0, 99), beat(100, 0, -3, 3, 101)] },
+            ReminderSaved => const { &[beat(90, 1, -1, 4, 101), beat(105, 0, 1, 0, 100)] },
+            ReminderDue => const { &[beat(75, -2, -2, -7, 101), beat(75, 2, -2, 7, 101), beat(110, 0, -1, 0, 101)] },
+            AgentStarted => const { &[beat(85, 0, 1, -4, 100), beat(135, 0, -1, -2, 102)] },
+            AgentDone => const { &[beat(75, 0, 1, 0, 98), beat(110, 0, -4, 3, 103), beat(100, 0, 0, 0, 100)] },
+            AgentAttention => const { &[beat(80, -2, -2, -5, 101), beat(135, 1, -2, 0, 102)] },
+        }
+    }
+}
+
+const fn beat(duration_ms: u16, offset_x: i8, offset_y: i8, rotation_deg: i8, scale_pct: u8) -> PoseKeyframe {
+    PoseKeyframe {
+        duration_ms, offset_x, offset_y, rotation_deg, scale_pct,
+        ear_deflect: 0, tail_angle: 0, eye_state: 0,
+    }
 }
 
 /// A coherent, named gesture set containing timing and keyframes for all three phases.
@@ -132,6 +179,7 @@ impl AnimationSet {
             AnimationPhase::Pickup => self.pickup,
             AnimationPhase::Held => self.held,
             AnimationPhase::Release => self.release,
+            AnimationPhase::Activity(cue) => cue.frames(),
         };
 
         if frames.is_empty() {
@@ -182,7 +230,7 @@ impl AnimationSet {
                 tail_angle: 0,
                 eye_state: 0,
             },
-            AnimationPhase::Release => Self::neutral_still_pose(),
+            AnimationPhase::Release | AnimationPhase::Activity(_) => Self::neutral_still_pose(),
         }
     }
 
@@ -1904,7 +1952,9 @@ pub unsafe fn draw_pose(
     hover: bool,
     dpi: i32,
     pose: PoseKeyframe,
-    file_visible: bool,
+    file_motion: Option<(i32, i32)>,
+    awake: bool,
+    cue: Option<Cue>,
 ) {
     let saved = SaveDC(dc);
     let pixel = dpi as f32 / 96.0;
@@ -1929,17 +1979,25 @@ pub unsafe fn draw_pose(
 
     SetPolyFillMode(dc, WINDING);
     let canvas = Canvas { dc, dpi };
-    draw_final_art(&canvas, appearance);
-    if file_visible {
+    draw_final_art(&canvas, appearance, awake);
+    if appearance == Appearance::Panda && awake {
+        canvas.oval([310, 762, 357, 812], Some(rgb(255, 244, 221)), None, 0);
+        canvas.oval([556, 724, 604, 776], Some(rgb(255, 244, 221)), None, 0);
+    }
+    if let Some((file_x, file_y)) = file_motion {
         use ArtPath::*;
         let palette = appearance.palette();
+        let x = file_x + if appearance == Appearance::Panda { 90 } else { 0 };
+        let y = file_y;
+        let move_to = |px, py| Move(px + x, py + y);
+        let line_to = |px, py| Line(px + x, py + y);
         canvas.path(
             &[
-                Move(540, 730),
-                Line(700, 730),
-                Line(760, 790),
-                Line(760, 950),
-                Line(540, 950),
+                move_to(540, 730),
+                line_to(700, 730),
+                line_to(760, 790),
+                line_to(760, 950),
+                line_to(540, 950),
                 Close,
             ],
             Some(palette.ink),
@@ -1947,17 +2005,17 @@ pub unsafe fn draw_pose(
             20,
         );
         canvas.path(
-            &[Move(700, 730), Line(760, 790), Line(700, 790), Close],
+            &[move_to(700, 730), line_to(760, 790), line_to(700, 790), Close],
             Some(palette.accent),
             None,
             0,
         );
         canvas.path(
             &[
-                Move(590, 840),
-                Line(710, 840),
-                Move(590, 890),
-                Line(670, 890),
+                move_to(590, 840),
+                line_to(710, 840),
+                move_to(590, 890),
+                line_to(670, 890),
             ],
             None,
             Some(palette.outline),
@@ -1965,4 +2023,28 @@ pub unsafe fn draw_pose(
         );
     }
     let _ = RestoreDC(dc, saved);
+    if let Some(cue) = cue {
+        draw_cue(&canvas, appearance.palette(), cue);
+    }
+}
+
+
+// Keep feedback marks stationary relative to the pet window while the body moves.
+unsafe fn draw_cue(canvas: &Canvas, palette: Palette, cue: Cue) {
+    use ArtPath::*;
+    use Cue::*;
+    let mark: &[ArtPath] = match cue {
+        FocusStart | FocusResume => &[Move(1070, 100), Line(1070, 223), Line(1180, 162), Close],
+        FocusPause => &[Move(1080, 106), Line(1080, 222), Move(1150, 106), Line(1150, 222)],
+        FocusDone | TodoDone | AgentDone => &[Move(1050, 170), Line(1100, 220), Line(1190, 104)],
+        ReminderSaved | ReminderDue => &[Move(1060, 201), Line(1080, 170), Line(1080, 139),
+            Curve(1080, 90, 1160, 90, 1160, 139), Line(1160, 170), Line(1180, 201), Close,
+            Move(1104, 229), Line(1136, 229)],
+        TodoSaved => &[Move(1070, 162), Line(1170, 162), Move(1120, 112), Line(1120, 212)],
+        AgentStarted => &[Move(1050, 126), Line(1095, 168), Line(1050, 210), Move(1120, 210), Line(1180, 210)],
+        AgentAttention => &[Move(1120, 100), Line(1120, 177), Move(1120, 210), Line(1120, 227)],
+        _ => return,
+    };
+    canvas.oval([1000, 55, 1240, 282], Some(palette.surface), Some(palette.outline), 14);
+    canvas.path(mark, None, Some(palette.accent), 20);
 }

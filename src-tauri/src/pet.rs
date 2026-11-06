@@ -1,6 +1,6 @@
 //! Native, idle-static Windows companion and temporary copy-only file handoff.
 use super::*;
-use crate::pet_art::{self, AnimationPhase, AnimationSet, Appearance};
+use crate::pet_art::{self, AnimationPhase, AnimationSet, Appearance, Cue};
 use std::{
     cell::RefCell,
     sync::atomic::{AtomicBool, AtomicIsize, Ordering},
@@ -31,6 +31,7 @@ const CLOSE_COMMANDS: u32 = WM_APP + 17;
 const APPEARANCE: u32 = WM_APP + 18;
 const PREVIEW: u32 = WM_APP + 19;
 const REFRESH_INDICATORS: u32 = WM_APP + 20;
+const PLAY_CUE: u32 = WM_APP + 21;
 const MOTION_TIMER: usize = 2;
 pub const APPEARANCES: [Appearance; 3] = [Appearance::Calico, Appearance::Dog, Appearance::Panda];
 const HOLD_SECS: u64 = 120;
@@ -63,6 +64,7 @@ struct State {
     timer: Option<PetTimer>,
     motion_set: usize,
     motion: Option<(AnimationPhase, usize, bool)>,
+    motion_deadline: Option<Instant>,
 }
 thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 fn wide(s: &str) -> Vec<u16> {
@@ -101,26 +103,47 @@ impl State {
             AnimationPhase::Pickup => set.pickup,
             AnimationPhase::Held => set.held,
             AnimationPhase::Release => set.release,
+            AnimationPhase::Activity(cue) => cue.frames(),
         }
     }
 }
 
 unsafe fn advance_motion(hwnd: HWND, state: &mut State, next: Option<(AnimationPhase, usize, bool)>) {
     let _ = KillTimer(Some(hwnd), MOTION_TIMER);
-    let mut enabled = BOOL(1);
-    let _ = SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&mut enabled as *mut BOOL).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
-    state.motion = next;
-    if let Some((phase, index, preview)) = next {
-        if let Some(frame) = state.frames(phase).get(index) {
-            let duration = if enabled.as_bool() { u32::from(frame.duration_ms).max(16) } else { 350 };
-            SetTimer(Some(hwnd), MOTION_TIMER, duration, None);
-        }
-        if !enabled.as_bool() {
-            state.motion = Some((phase, usize::MAX, preview));
+    state.motion = None;
+    state.motion_deadline = None;
+    if let Some((phase, index, _)) = next.filter(|_| IsWindowVisible(hwnd).as_bool()) {
+        let mut enabled = BOOL(1);
+        let _ = SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION, 0, Some((&mut enabled as *mut BOOL).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        if enabled.as_bool() {
+            if let Some(frame) = state.frames(phase).get(index) {
+                let delay = u32::from(frame.duration_ms).max(16);
+                if SetTimer(Some(hwnd), MOTION_TIMER, delay, None) != 0 {
+                    state.motion = next;
+                    state.motion_deadline = Some(Instant::now() + Duration::from_millis(delay.into()));
+                }
+            }
         }
     }
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
+
+fn can_play_cue(motion: Option<(AnimationPhase, usize, bool)>) -> bool {
+    motion.is_none_or(|(phase, _, preview)| !preview && matches!(phase, AnimationPhase::Activity(_)))
+}
+
+pub fn cue(app: &tauri::AppHandle, cue: Cue) {
+    if let Some(control) = app.try_state::<Arc<Control>>() {
+        let hwnd = HWND(control.hwnd.load(Ordering::Relaxed) as _);
+        if !hwnd.0.is_null() {
+            let _ = unsafe { PostMessageW(Some(hwnd), PLAY_CUE, WPARAM(cue as usize), LPARAM(0)) };
+        }
+    }
+}
+
 fn seconds(deadline: Option<Instant>) -> u64 {
     deadline
         .map(|d| {
@@ -184,7 +207,7 @@ unsafe fn expire(hwnd: HWND) {
             s.files.clear();
             s.deadline = None;
             let _ = KillTimer(Some(hwnd), 1);
-            advance_motion(hwnd, s, None);
+            advance_motion(hwnd, s, Some((AnimationPhase::Activity(Cue::FileExpired), 0, false)));
             if let Ok(mut v) = s.control.status.lock() {
                 v.message = "Hold expired. Original files were left in place.".into();
             }
@@ -601,22 +624,34 @@ unsafe fn paint(hwnd: HWND) {
         bg,
     );
     let _ = DeleteObject(bg.into());
-    let (count, left, hover, appearance, pose, file_visible, timer) = with_state(|state| {
+    let (count, left, hover, appearance, pose, file_motion, timer, awake, cue) = with_state(|state| {
         let count = state.files.len();
-        let (pose, file_visible) = match state.motion {
+        let (pose, file_motion) = match state.motion {
             Some((phase, index, _)) => (
                 state.frames(phase).get(index).copied()
                     .unwrap_or_else(|| AnimationSet::reduced_motion_pose(phase)),
-                phase != AnimationPhase::Release,
+                match phase {
+                    AnimationPhase::Pickup => Some((0, 120_i32.saturating_sub(index.min(4) as i32 * 30))),
+                    AnimationPhase::Release if index < 2 => Some((index as i32 * 180, -(index as i32) * 120)),
+                    AnimationPhase::Held => Some((0, 0)),
+                    _ => (count > 0).then_some((0, 0)),
+                },
             ),
-            None if count > 0 => (AnimationSet::reduced_motion_pose(AnimationPhase::Held), true),
-            None => (AnimationSet::neutral_still_pose(), false),
+            None if count > 0 => (AnimationSet::reduced_motion_pose(AnimationPhase::Held), Some((0, 0))),
+            None => (AnimationSet::neutral_still_pose(), None),
         };
-        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_visible, state.timer.clone())
+        let cue = state.motion.and_then(|(phase, _, _)| match phase {
+            AnimationPhase::Activity(cue) => Some(cue),
+            _ => None,
+        });
+        let bar_open = state.control.status.lock().is_ok_and(|status| status.command_bar_visible);
+        let awake = file_motion.is_some() || bar_open || state.timer.as_ref().is_some_and(|timer| timer.running)
+            || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
+        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, state.timer.clone(), awake, cue)
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
     SetMapMode(dc, MM_TEXT);
-    pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_visible);
+    pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_motion, awake, cue);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
     if count > 0 {
@@ -645,8 +680,23 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        PLAY_CUE => {
+            if let Some(&cue) = Cue::ALL.get(wp.0) {
+                with_state(|state| {
+                    if can_play_cue(state.motion) {
+                        advance_motion(hwnd, state, Some((AnimationPhase::Activity(cue), 0, false)));
+                    } else {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                });
+            }
+            LRESULT(0)
+        }
         WM_TIMER if wp.0 == MOTION_TIMER => {
             with_state(|state| {
+                if state.motion_deadline.is_none_or(|deadline| Instant::now() < deadline) {
+                    return;
+                }
                 let next = state.motion.and_then(|(phase, index, preview)| {
                     if index.saturating_add(1) < state.frames(phase).len() {
                         return Some((phase, index + 1, preview));
@@ -661,7 +711,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             });
             LRESULT(0)
         }
-        WM_TIMER => {
+        WM_TIMER if wp.0 == 1 => {
             expire(hwnd);
             LRESULT(0)
         }
@@ -713,6 +763,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 if wp.0 < 5 && state.files.is_empty() {
                     state.motion_set = wp.0;
                     save(&state.app, &format!("pet_motion_{}", state.appearance.key()), &wp.0.to_string());
+                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                     let _ = PostMessageW(Some(hwnd), SHOW, WPARAM(0), LPARAM(0));
                     advance_motion(hwnd, state, Some((AnimationPhase::Pickup, 0, true)));
                 }
@@ -732,6 +783,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 clamp(hwnd, false);
             }
             with_state(|s| {
+                if !visible {
+                    advance_motion(hwnd, s, None);
+                }
                 save(
                     &s.app,
                     "pet_visible",
@@ -971,6 +1025,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                     appearance,
                     motion_set: motion_setting(&app, appearance),
                     motion: None,
+                    motion_deadline: None,
                 })
             });
             let hwnd = CreateWindowExW(
@@ -1094,8 +1149,13 @@ pub fn close_commands(app: tauri::AppHandle) -> Result<(), String> {
 }
 pub fn bar_visibility(app: &tauri::AppHandle, visible: bool) {
     if let Some(c) = app.try_state::<Arc<Control>>() {
-        if let Ok(mut status) = c.status.lock() {
+        let changed = c.status.lock().is_ok_and(|mut status| {
+            let changed = status.command_bar_visible != visible;
             status.command_bar_visible = visible;
+            changed
+        });
+        if changed {
+            cue(app, if visible { Cue::Wake } else { Cue::Settle });
         }
     }
 }
@@ -1155,6 +1215,23 @@ pub fn stop(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_reactions_cannot_interrupt_file_motion_or_preview() {
+        assert!(can_play_cue(None));
+        assert!(can_play_cue(Some((AnimationPhase::Activity(Cue::Wake), 0, false))));
+        for phase in [AnimationPhase::Pickup, AnimationPhase::Held, AnimationPhase::Release] {
+            assert!(!can_play_cue(Some((phase, 0, false))));
+            assert!(!can_play_cue(Some((phase, 0, true))));
+        }
+        assert_eq!(Appearance::from_key("cat"), Appearance::Calico);
+        assert_eq!(Appearance::from_key("husky"), Appearance::Calico);
+        for (index, cue) in Cue::ALL.into_iter().enumerate() {
+            assert_eq!(cue as usize, index);
+            assert!(!cue.frames().is_empty());
+            assert!(cue.frames().iter().map(|frame| u32::from(frame.duration_ms)).sum::<u32>() <= 350);
+        }
+    }
+
     use super::*;
     #[test]
     fn shell_file_data_roundtrips_multiple_unicode_paths_without_touching_originals() {

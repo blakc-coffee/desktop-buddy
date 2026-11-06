@@ -191,8 +191,24 @@ fn publish(app: &tauri::AppHandle, core: &Core, task: &mut Task) -> Result<(), S
         task.files.clear();
     }
     let db = core.db.lock().map_err(err)?;
+    let cue = match task.state.as_str() {
+        "running" if task.delivery == "acknowledged" && task.activity == "Codex is working" => {
+            Some(pet_art::Cue::AgentStarted)
+        }
+        "completed" => Some(pet_art::Cue::AgentDone),
+        "failed" | "unknown" | "awaiting_approval" | "awaiting_input" => Some(pet_art::Cue::AgentAttention),
+        _ => None,
+    };
+    let cue = cue.filter(|_| {
+        db.query_row("SELECT status FROM agent_tasks WHERE id=?1", [&task.id], |row| row.get::<_, String>(0))
+            .is_ok_and(|previous| previous != task.state
+                && (task.state != "running" || previous == "starting"))
+    });
     store(&db, task)?;
     drop(db);
+    if let Some(cue) = cue {
+        pet::cue(app, cue);
+    }
     let _ = app.emit("agent-changed", ());
     let _ = app.emit("data-changed", ());
     Ok(())

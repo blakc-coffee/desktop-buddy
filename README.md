@@ -2,7 +2,7 @@
 
 Desktop Buddy is a Windows desktop pet and quick launcher for files, projects, timers, to-dos, and reminders. It runs from the system tray. You can use the everyday tools without an AI account or an open Codex window.
 
-![Five pets rendered by Buddy, from left to right: calico, tuxedo cat, husky, Shiba Inu, and panda](docs/screenshots/pet-lineup.png)
+![Calico, Shiba Inu, and a sleeping Panda rendered by Buddy](docs/screenshots/pet-lineup.png)
 
 *Artwork preview rendered by Buddy’s native renderer.*
 
@@ -37,7 +37,7 @@ Drop up to 20 local files or folders onto the pet. The pet holds their reference
 
 A successful handoff clears the pet’s hold. A cancelled drag leaves it available until expiry. Clearing, expiry, and quitting discard Buddy’s references. Your source files stay in place.
 
-Choose **Try and select motion set** from the tray menu to preview one of five motion sets for the current pet without transferring a file.
+Choose **Try and select motion set** from the tray menu to preview one of five file handoff styles without transferring a file. Buddy also reacts when the launcher opens, focus changes, a to-do is saved or checked off, a reminder comes due, or a managed Codex task changes state. Panda opens its eyes when you open the launcher or it holds a file. Buddy follows the Windows animation setting.
 
 ## Manage work and reminders
 

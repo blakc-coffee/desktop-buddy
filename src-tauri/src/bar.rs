@@ -349,6 +349,7 @@ unsafe fn execute() {
         }
         return;
     };
+    let opens_path = matches!(&action, Action::Open(_) | Action::OpenFile(_) | Action::Editor(_));
     let result = match action {
         Action::Complete(value) => {
             fill(value);
@@ -435,6 +436,9 @@ unsafe fn execute() {
     };
     match result {
         Ok(message) => {
+            if opens_path {
+                pet::cue(&app, crate::pet_art::Cue::FileOpened);
+            }
             choices(vec![]);
             note(&message);
         }

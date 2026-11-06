@@ -116,6 +116,7 @@ fn save_item(
         return Err("Use the dedicated action for this item.".into());
     }
     let db = core.db.lock().map_err(err)?;
+    let mut saved_cue = None;
     if let Ok(old) = get(&db, &item.id) {
         if old.kind != item.kind {
             return Err("An item's type cannot change.".into());
@@ -129,6 +130,11 @@ fn save_item(
         if item.kind == "shelf" && all.iter().filter(|i| i.kind == "shelf").count() >= 50 {
             return Err("Shelf limit is 50 entries.".into());
         }
+        saved_cue = match item.kind.as_str() {
+            "todo" => Some(pet_art::Cue::TodoSaved),
+            "reminder" => Some(pet_art::Cue::ReminderSaved),
+            _ => None,
+        };
         item.id = new_id();
         item.created_at = now();
     }
@@ -138,6 +144,9 @@ fn save_item(
     put(&db, &item)?;
     drop(db);
     changed(&app, &core);
+    if let Some(cue) = saved_cue {
+        pet::cue(&app, cue);
+    }
     Ok(())
 }
 #[tauri::command]
@@ -172,6 +181,9 @@ fn toggle_item(
     put(&db, &i)?;
     drop(db);
     changed(&app, &core);
+    if i.kind == "todo" && i.done {
+        pet::cue(&app, pet_art::Cue::TodoDone);
+    }
     Ok(())
 }
 #[tauri::command]
@@ -220,6 +232,7 @@ fn start_timer(
     put(&db, &i)?;
     drop(db);
     changed(&app, &core);
+    pet::cue(&app, pet_art::Cue::FocusStart);
     Ok(())
 }
 #[tauri::command]
@@ -234,26 +247,30 @@ fn timer_action(
     if i.kind != "timer" {
         return Err("Not a timer.".into());
     }
-    match action.as_str() {
+    let cue = match action.as_str() {
         "pause" if i.state == "running" => {
             i.remaining_ms = remaining(&i, now(), ticks(), &core.run);
             i.state = "paused".into();
+            pet_art::Cue::FocusPause
         }
         "resume" if i.state == "paused" => {
             i.state = "running".into();
             i.due_at = now() + i.remaining_ms;
             i.started_tick = ticks();
             i.run = core.run.clone();
+            pet_art::Cue::FocusResume
         }
         "reset" => {
             i.state = "paused".into();
             i.remaining_ms = i.duration_ms;
+            pet_art::Cue::FocusPause
         }
         _ => return Err("Timer action is not valid for its current state.".into()),
-    }
+    };
     put(&db, &i)?;
     drop(db);
     changed(&app, &core);
+    pet::cue(&app, cue);
     Ok(())
 }
 #[tauri::command]
@@ -588,6 +605,7 @@ fn scheduler(app: tauri::AppHandle, core: Shared) {
         let generation = core.revision.lock().unwrap_or_else(|p| p.into_inner());
         let mut delay = Duration::from_secs(3600);
         let mut fired = vec![];
+        let mut reminder_due = false;
         if let Ok(mut db) = core.db.lock() {
             if let Ok(items) = rows(&db) {
                 if let Ok(tx) = db.transaction() {
@@ -625,6 +643,7 @@ fn scheduler(app: tauri::AppHandle, core: Shared) {
                                     successful = false;
                                     break;
                                 }
+                                reminder_due |= i.kind == "reminder";
                                 fired.push(a.title);
                             } else {
                                 delay = delay
@@ -645,6 +664,8 @@ fn scheduler(app: tauri::AppHandle, core: Shared) {
         }
         if !fired.is_empty() {
             pet::refresh_indicators(&app);
+            let cue = if reminder_due { pet_art::Cue::ReminderDue } else { pet_art::Cue::FocusDone };
+            pet::cue(&app, cue);
             let _ = app.emit("data-changed", ());
             let body = if fired.len() == 1 {
                 fired[0].clone()
