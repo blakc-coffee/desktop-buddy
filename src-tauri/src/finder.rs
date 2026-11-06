@@ -35,6 +35,15 @@ pub fn roots(app: &tauri::AppHandle, saved: impl IntoIterator<Item = PathBuf>) -
         }
     }
     let mut seen = HashSet::new();
+    if let Ok(home) = paths.home_dir() {
+        roots.push(home);
+    }
+    let drives = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+    for index in 0..26 {
+        if drives & (1 << index) != 0 {
+            roots.push(PathBuf::from(format!("{}:\\", char::from(b'A' + index))));
+        }
+    }
     roots.retain(|path| path.is_absolute() && seen.insert(path_key(path)));
     roots
 }
