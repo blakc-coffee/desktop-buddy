@@ -62,6 +62,8 @@ With the native Codex CLI installed and signed in, open **Activity → New task*
 
 Save reusable notes in **Projects**. In **New task → Project memory and file references**, you can include that note, an excerpt from one completed task in the same project, and up to eight files inside the workspace. Enter file paths or select them from the Shelf. Codex may send the selected context and any file contents it reads to its service.
 
+For a question about a menu or notes, open **Activity → Ask about files**. Pick the saved project and a model, then enter your question and add the files inside that project. You can reuse paths saved on the Shelf. Buddy starts the question in a read-only workspace and asks Codex to cite the source. Open the task’s **Completion receipt** to read the answer.
+
 Buddy stores task records locally. An active task interrupted by a restart requires checking its state before retrying. Existing Codex sessions can be discovered as stored history. Screen guidance and Claude or Antigravity connections are planned features.
 
 ## Local data and notifications
