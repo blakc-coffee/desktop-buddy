@@ -591,7 +591,7 @@ unsafe fn layout(hwnd: HWND) {
             CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY,
             DEFAULT_PITCH.0 as u32,
-            w!("Segoe UI"),
+            w!("Trebuchet MS"),
         );
         let old = change(|b| {
             let old = b.font;

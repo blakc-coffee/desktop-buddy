@@ -559,7 +559,31 @@ unsafe fn persist_position(hwnd: HWND) {
 }
 struct PetTimer {
     id: String,
-    deadline: Instant,
+    clock: TimerClock,
+}
+
+enum TimerClock {
+    Running(Instant),
+    Paused(u64),
+}
+
+impl PetTimer {
+    fn display(&self) -> Option<(u64, bool)> {
+        match self.clock {
+            TimerClock::Running(deadline) => {
+                let left = seconds(Some(deadline));
+                (left > 0).then_some((left, true))
+            }
+            TimerClock::Paused(left) => Some((left, false)),
+        }
+    }
+
+    fn action(&self) -> &'static str {
+        match self.clock {
+            TimerClock::Running(_) => "pause",
+            TimerClock::Paused(_) => "resume",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -575,8 +599,12 @@ enum ReminderMark {
 }
 
 impl Indicators {
-    fn running_timer(&self) -> Option<&PetTimer> {
-        self.timer.as_ref().filter(|timer| timer.deadline > Instant::now())
+    fn visible_timer(&self) -> Option<&PetTimer> {
+        self.timer.as_ref().filter(|timer| timer.display().is_some())
+    }
+
+    fn is_counting(&self) -> bool {
+        self.visible_timer().is_some_and(|timer| timer.action() == "pause")
     }
 }
 
@@ -589,6 +617,7 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
         ).ok()?;
         let items = query.query_map([], |row| row.get::<_, String>(0)).ok()?;
         let mut indicators = Indicators::default();
+        let mut paused = None;
         for item in items.filter_map(Result::ok).filter_map(|payload| serde_json::from_str::<Item>(&payload).ok()) {
             match item.kind.as_str() {
                 "timer" if item.state == "running" && indicators.timer.is_none() => {
@@ -596,9 +625,15 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                     if left > 0 {
                         indicators.timer = Some(PetTimer {
                             id: item.id,
-                            deadline: Instant::now() + Duration::from_millis(left as u64),
+                            clock: TimerClock::Running(Instant::now() + Duration::from_millis(left as u64)),
                         });
                     }
+                }
+                "timer" if item.state == "paused" && paused.is_none() => {
+                    paused = Some(PetTimer {
+                        id: item.id,
+                        clock: TimerClock::Paused((item.remaining_ms.max(0) as u64).div_ceil(1000)),
+                    });
                 }
                 "reminder" if !item.done && indicators.reminder.is_none() => {
                     indicators.reminder = Some(ReminderMark::Scheduled);
@@ -609,6 +644,7 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                 _ => {}
             }
         }
+        indicators.timer = indicators.timer.or(paused);
         Some(indicators)
     };
     read().unwrap_or_default()
@@ -616,7 +652,7 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
 
 unsafe fn update_countdown_tick(hwnd: HWND, indicators: &Indicators) {
     let _ = KillTimer(Some(hwnd), COUNTDOWN_TIMER);
-    if IsWindowVisible(hwnd).as_bool() && indicators.running_timer().is_some() {
+    if IsWindowVisible(hwnd).as_bool() && indicators.is_counting() {
         let _ = SetTimer(Some(hwnd), COUNTDOWN_TIMER, 1000, None);
     }
 }
@@ -635,22 +671,30 @@ fn timer_bounds(has_files: bool) -> RECT {
 }
 
 unsafe fn reminder_mark(dc: HDC, mark: ReminderMark, palette: pet_art::Palette) {
-    let (surface, ink) = match mark {
-        ReminderMark::Scheduled => (palette.surface, palette.accent),
-        ReminderMark::Due => (palette.accent, palette.surface),
-    };
-    badge(dc, RECT { left: 5, top: 6, right: 25, bottom: 26 }, "", surface, ink);
-    let pen = CreatePen(PS_SOLID, 1, ink);
-    let previous = SelectObject(dc, pen.into());
-    let _ = Polyline(dc, &[
-        POINT { x: 10, y: 19 }, POINT { x: 12, y: 16 }, POINT { x: 12, y: 13 },
-        POINT { x: 14, y: 11 }, POINT { x: 16, y: 11 }, POINT { x: 18, y: 13 },
-        POINT { x: 18, y: 16 }, POINT { x: 20, y: 19 }, POINT { x: 10, y: 19 },
+    // A little plush star, drawn directly beside the pet.
+    let fill = CreateSolidBrush(palette.accent);
+    let outline = CreatePen(PS_SOLID, 1, palette.surface);
+    let previous_brush = SelectObject(dc, fill.into());
+    let previous_pen = SelectObject(dc, outline.into());
+    let point = |x, y| POINT { x, y };
+    let _ = Polygon(dc, &[
+        point(15, 7), point(18, 13), point(25, 14), point(20, 19), point(21, 26),
+        point(15, 23), point(9, 26), point(10, 19), point(5, 14), point(12, 13),
     ]);
-    let _ = MoveToEx(dc, 14, 21, None);
-    let _ = LineTo(dc, 17, 21);
-    SelectObject(dc, previous);
-    let _ = DeleteObject(pen.into());
+    let _ = MoveToEx(dc, 12, 17, None);
+    let _ = LineTo(dc, 12, 19);
+    let _ = MoveToEx(dc, 18, 17, None);
+    let _ = LineTo(dc, 18, 19);
+    let _ = Polyline(dc, &[point(14, 19), point(15, 20), point(16, 19)]);
+    if matches!(mark, ReminderMark::Due) {
+        let _ = Polyline(dc, &[point(25, 4), point(28, 7), point(25, 10), point(22, 7), point(25, 4)]);
+        let _ = MoveToEx(dc, 6, 7, None);
+        let _ = LineTo(dc, 9, 7);
+    }
+    SelectObject(dc, previous_pen);
+    SelectObject(dc, previous_brush);
+    let _ = DeleteObject(outline.into());
+    let _ = DeleteObject(fill.into());
 }
 unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: COLORREF) {
     let fill = CreateSolidBrush(surface);
@@ -660,18 +704,15 @@ unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: CO
     SelectObject(dc, old_pen);
     SelectObject(dc, old_brush);
     let _ = DeleteObject(fill.into());
-    if label.is_empty() {
-        return;
-    }
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, ink);
     let mut text = wide(label);
     let len = text.len() - 1;
     DrawTextW(dc, &mut text[..len], &mut rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 }
-fn pause_pet_timer(app: tauri::AppHandle, id: String) {
+fn change_pet_timer(app: tauri::AppHandle, (id, action): (String, &'static str)) {
     if let Some(core) = app.try_state::<Shared>() {
-        let _ = timer_action(app.clone(), core, id, "pause".into());
+        let _ = timer_action(app.clone(), core, id, action.into());
     }
 }
 unsafe fn paint(hwnd: HWND) {
@@ -714,8 +755,8 @@ unsafe fn paint(hwnd: HWND) {
             _ => None,
         });
         let bar_open = state.control.status.lock().is_ok_and(|status| status.command_bar_visible);
-        let timer = state.indicators.running_timer().map(|timer| seconds(Some(timer.deadline)));
-        let awake = file_motion.is_some() || bar_open || timer.is_some()
+        let timer = state.indicators.visible_timer().and_then(PetTimer::display);
+        let awake = file_motion.is_some() || bar_open || timer.is_some_and(|(_, running)| running)
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
         (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, state.indicators.reminder, awake, cue)
     }).unwrap_or_default();
@@ -724,6 +765,13 @@ unsafe fn paint(hwnd: HWND) {
     pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_motion, awake, cue);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
+    let font = if count > 0 || timer.is_some() {
+        CreateFontW(-13, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"))
+    } else {
+        HFONT::default()
+    };
+    let previous_font = (!font.0.is_null()).then(|| SelectObject(dc, font.into()));
     if let Some(mark) = reminder {
         reminder_mark(dc, mark, palette);
     }
@@ -733,10 +781,15 @@ unsafe fn paint(hwnd: HWND) {
         badge(dc, RECT { left: 9, top: 111, right: if compact { 48 } else { 119 }, bottom: 132 },
             &label, palette.surface, palette.ink);
     }
-    if let Some(left) = timer.filter(|left| *left > 0) {
+    if let Some((left, running)) = timer {
         let time = countdown_label(left);
-        let label = if count > 0 { time } else { format!("Ⅱ  {time}") };
-        badge(dc, timer_bounds(count > 0), &label, palette.accent, palette.surface);
+        let label = if count > 0 { time } else if running { format!("Ⅱ  {time}") } else { format!("▶  {time}") };
+        let (surface, ink) = if running { (palette.accent, palette.surface) } else { (palette.surface, palette.accent) };
+        badge(dc, timer_bounds(count > 0), &label, surface, ink);
+    }
+    if let Some(previous_font) = previous_font {
+        SelectObject(dc, previous_font);
+        let _ = DeleteObject(font.into());
     }
     let _ = EndPaint(hwnd, &ps);
 }
@@ -780,7 +833,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         WM_TIMER if wp.0 == COUNTDOWN_TIMER => {
             with_state(|s| {
-                if s.indicators.running_timer().is_none() {
+                if !s.indicators.is_counting() {
                     let _ = KillTimer(Some(hwnd), COUNTDOWN_TIMER);
                 }
             });
@@ -957,10 +1010,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     if let Some((app, timer)) = with_state(|s| {
                         let r = timer_bounds(!s.files.is_empty());
                         let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-                        (s.app.clone(), s.indicators.running_timer().filter(|_| hit).map(|timer| timer.id.clone()))
+                        (s.app.clone(), s.indicators.visible_timer().filter(|_| hit).map(|timer| (timer.id.clone(), timer.action())))
                     }) {
                         if let Some(timer) = timer {
-                            pause_pet_timer(app, timer);
+                            change_pet_timer(app, timer);
                         } else {
                             crate::bar::toggle(&app, hwnd);
                         }
@@ -987,9 +1040,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 );
                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
                 let _ = AppendMenuW(menu, MF_STRING, 6, w!("Copy held files (then paste)"));
-                let timer = with_state(|s| s.indicators.running_timer().map(|timer| timer.id.clone())).flatten();
-                if timer.is_some() {
-                    let _ = AppendMenuW(menu, MF_STRING, 7, w!("Pause timer"));
+                let timer = with_state(|s| s.indicators.visible_timer().map(|timer| (timer.id.clone(), timer.action()))).flatten();
+                if let Some((_, action)) = &timer {
+                    let label = if *action == "pause" { w!("Pause timer") } else { w!("Resume timer") };
+                    let _ = AppendMenuW(menu, MF_STRING, 7, label);
                 }
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
                 let _ = AppendMenuW(menu, MF_STRING, 4, w!("Reset position"));
@@ -1009,7 +1063,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 match action {
                     7 => {
                         if let (Some(app), Some(timer)) = (with_state(|s| s.app.clone()), timer) {
-                            pause_pet_timer(app, timer);
+                            change_pet_timer(app, timer);
                         }
                     }
                     6 => {
