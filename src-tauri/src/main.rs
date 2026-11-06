@@ -794,9 +794,16 @@ fn main() {
                 agents: Mutex::new(std::collections::HashMap::new()),
             });
             app.manage(core.clone());
-            if let Err(e) = app.global_shortcut().register("Ctrl+Alt+Space") {
+            let mut unavailable = Vec::new();
+            for shortcut in ["Ctrl+Alt+P", "Ctrl+Alt+Space"] {
+                if let Err(e) = app.global_shortcut().register(shortcut) {
+                    unavailable.push(format!("{shortcut}: {e}"));
+                }
+            }
+            if !unavailable.is_empty() {
                 *core.warning.lock().unwrap() = Some(format!(
-                    "Shortcut unavailable: {e}. Open from the tray instead."
+                    "Shortcut unavailable ({}). You can open Buddy from the tray.",
+                    unavailable.join(", ")
                 ));
             }
             let open = MenuItem::with_id(app, "open", "Open Desktop Buddy", true, None::<&str>)?;
@@ -827,7 +834,7 @@ fn main() {
             }
             TrayIconBuilder::new()
                 .icon(tauri::image::Image::new_owned(pixels, 32, 32))
-                .tooltip("Desktop Buddy · Ctrl+Alt+Space")
+                .tooltip("Desktop Buddy · Ctrl+Alt+P")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {

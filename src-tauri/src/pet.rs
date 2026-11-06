@@ -1031,7 +1031,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let mut p = POINT::default();
             let _ = GetCursorPos(&mut p);
             if let Ok(menu) = CreatePopupMenu() {
-                let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools (Ctrl+Alt+Space)"));
+                let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools (Ctrl+Alt+P)"));
                 let _ = AppendMenuW(
                     menu,
                     MF_STRING | MF_DISABLED,

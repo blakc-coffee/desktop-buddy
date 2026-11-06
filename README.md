@@ -9,7 +9,7 @@ Desktop Buddy is a Windows desktop pet and quick launcher for files, projects, t
 ## Get started
 
 1. If you already have a build, run **desktop-buddy.exe**. If you cloned this repository, follow [Build from source](#build-from-source).
-2. Click the pet, press **Ctrl+Alt+Space**, or select **Toggle toolbar** from Buddy’s tray menu.
+2. Click the pet, press **Ctrl+Alt+P** (or **Ctrl+Alt+Space**), or select **Toggle toolbar** from Buddy’s tray menu.
 3. Type a file or folder name to open the wider search view. With the input empty, scroll or press **↑/↓** to browse commands. Press **Tab** to fill a command and **Enter** to run it or open the selected result.
 4. Click outside or press **Esc** to close the launcher. Use the slash commands below to start a timer or pick a pet.
 
