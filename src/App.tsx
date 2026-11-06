@@ -205,10 +205,16 @@ export default function App() {
     if (native) {
       void import("@tauri-apps/api/event").then(async ({ listen }) => {
         const unlisten = await listen("data-changed", onChange);
+        const offCodex = await listen("open-codex", () => {
+          if (alive) setPage("Activity");
+        });
         if (alive) {
-          cleanup = unlisten;
+          cleanup = () => { unlisten(); offCodex(); };
           void refresh();
-        } else unlisten();
+        } else {
+          unlisten();
+          offCodex();
+        }
       });
     } else {
       window.addEventListener("preview-changed", onChange);
@@ -589,7 +595,7 @@ export default function App() {
                       <p className="explanation">Loading local agent tools…</p>
                     }
                   >
-                    <AgentPanel projects={projects} />
+                    <AgentPanel projects={projects} shelf={shelf} />
                   </Suspense>
                   <section>
                     <div className="section-heading">

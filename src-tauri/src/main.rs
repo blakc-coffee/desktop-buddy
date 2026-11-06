@@ -644,6 +644,7 @@ fn scheduler(app: tauri::AppHandle, core: Shared) {
             }
         }
         if !fired.is_empty() {
+            pet::refresh_indicators(&app);
             let _ = app.emit("data-changed", ());
             let body = if fired.len() == 1 {
                 fired[0].clone()
@@ -782,17 +783,15 @@ fn main() {
             let quit = MenuItem::with_id(app, "quit", "Quit (reminders stop)", true, None::<&str>)?;
             let show_pet = MenuItem::with_id(app, "show-pet", "Show pet", true, None::<&str>)?;
             let hide_pet = MenuItem::with_id(app, "hide-pet", "Hide pet", true, None::<&str>)?;
-            let cat = MenuItem::with_id(app, "pet-cat", "Pet · Cosmo (Cat)", true, None::<&str>)?;
             let dog = MenuItem::with_id(app, "pet-dog", "Pet · Shiba Inu (Dog)", true, None::<&str>)?;
             let calico = MenuItem::with_id(app, "pet-calico", "Pet · Calico", true, None::<&str>)?;
             let panda = MenuItem::with_id(app, "pet-panda", "Pet · Panda", true, None::<&str>)?;
-            let husky = MenuItem::with_id(app, "pet-husky", "Pet · Siberian Husky", true, None::<&str>)?;
             let motion = tauri::menu::Submenu::new(app, "Try and select motion set", true)?;
             for index in 0..5 {
                 let item = MenuItem::with_id(app, format!("motion-{index}"), format!("Set {}", index + 1), true, None::<&str>)?;
                 motion.append(&item)?;
             }
-            let menu = Menu::with_items(app, &[&open, &commands, &show_pet, &hide_pet, &cat, &calico, &dog, &panda, &husky, &motion, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &commands, &show_pet, &hide_pet, &calico, &dog, &panda, &motion, &quit])?;
             let mut pixels = vec![0u8; 32 * 32 * 4];
             for y in 5..27 {
                 for x in 5..27 {
@@ -821,11 +820,9 @@ fn main() {
                     "hide-pet" => {
                         let _ = pet::pet_hide(app.clone());
                     }
-                    "pet-cat" => pet::set_appearance(app, pet_art::Appearance::Cat),
                     "pet-dog" => pet::set_appearance(app, pet_art::Appearance::Dog),
                     "pet-calico" => pet::set_appearance(app, pet_art::Appearance::Calico),
                     "pet-panda" => pet::set_appearance(app, pet_art::Appearance::Panda),
-                    "pet-husky" => pet::set_appearance(app, pet_art::Appearance::Husky),
                     "quit" => request_quit(app),
                     id => {
                         if let Some(index) = id.strip_prefix("motion-").and_then(|value| value.parse().ok()) {

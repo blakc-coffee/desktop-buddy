@@ -24,13 +24,14 @@ pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 6] {
+pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 7] {
     [
         (&["/t", "/timer", "/focus"][..], "/t 25m · Timer", "/t "),
         (&["/f", "/find"][..], "/f name · Find files and folders", "/f "),
         (&["/w", "/workspace"][..], "/w name · Workspace", "/w "),
         (&["/d", "/todo"][..], "/d task · To-do", "/d "),
         (&["/r", "/remind"][..], "/r 10m · Reminder", "/r "),
+        (&["/codex"][..], "/codex · Open Codex tasks", "/codex"),
         (&["/pet"][..], "/pet · Choose pet", "/pet"),
     ]
 }
@@ -44,7 +45,7 @@ pub fn parse(text: &str) -> Result<Command, String> {
     let verb = verb.to_ascii_lowercase();
     match verb.as_str() {
         "" | "/" | "/help" => Ok(Command::Help),
-        "/tools" | "/settings" if args.is_empty() => Ok(Command::Tools),
+        "/tools" | "/settings" | "/codex" if args.is_empty() => Ok(Command::Tools),
         "/tools" | "/settings" => Ok(Command::Find(args.into())),
         "/copy" => Ok(Command::Copy),
         "/pet" if args.is_empty() => Ok(Command::Pets),
@@ -91,8 +92,9 @@ mod tests {
     use super::*;
     #[test]
     fn autocomplete_browses_empty_input_and_leaves_arguments_alone() {
-        assert_eq!(suggestions("").len(), 6);
-        assert!(suggestions("/co").is_empty());
+        assert_eq!(suggestions("").len(), 7);
+        assert!(suggestions("/copy").is_empty());
+        assert_eq!(parse("/codex"), Ok(Command::Tools));
         assert!(suggestions("/too").is_empty());
         assert_eq!(parse("/pet"), Ok(Command::Pets));
         assert_eq!(suggestions("/ti"), vec![("/t 25m · Timer", "/t ")]);

@@ -1146,3 +1146,26 @@
     }
   }
 }
+
+
+.agent-context {
+  margin-block: 0.5rem;
+  min-width: 0;
+}
+
+.agent-context summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.agent-context label {
+  margin-block: 0.5rem;
+}
+
+.context-preview {
+  max-height: 9rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}

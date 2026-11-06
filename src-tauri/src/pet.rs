@@ -32,9 +32,7 @@ const APPEARANCE: u32 = WM_APP + 18;
 const PREVIEW: u32 = WM_APP + 19;
 const REFRESH_INDICATORS: u32 = WM_APP + 20;
 const MOTION_TIMER: usize = 2;
-pub const APPEARANCES: [Appearance; 5] = [
-    Appearance::Cat, Appearance::Dog, Appearance::Calico, Appearance::Panda, Appearance::Husky,
-];
+pub const APPEARANCES: [Appearance; 3] = [Appearance::Calico, Appearance::Dog, Appearance::Panda];
 const HOLD_SECS: u64 = 120;
 const WIDTH: i32 = 128;
 const HEIGHT: i32 = 136;
@@ -62,6 +60,7 @@ struct State {
     press: Option<(POINT, RECT, bool)>,
     hover: bool,
     appearance: Appearance,
+    timer: Option<PetTimer>,
     motion_set: usize,
     motion: Option<(AnimationPhase, usize, bool)>,
 }
@@ -534,6 +533,55 @@ unsafe fn persist_position(hwnd: HWND) {
         with_state(|s| save(&s.app, "pet_position", &format!("{},{}", r.left, r.top)));
     }
 }
+#[derive(Clone)]
+struct PetTimer {
+    id: String,
+    running: bool,
+}
+impl PetTimer {
+    fn action(&self) -> &'static str {
+        if self.running { "pause" } else { "resume" }
+    }
+}
+fn pet_timer(app: &tauri::AppHandle) -> Option<PetTimer> {
+    let core = app.try_state::<Shared>()?;
+    let db = core.db.lock().ok()?;
+    let mut query = db.prepare("SELECT payload FROM items WHERE kind = 'timer' ORDER BY created DESC").ok()?;
+    let timers = query.query_map([], |r| r.get::<_, String>(0)).ok()?;
+    let mut paused = None;
+    for timer in timers.filter_map(Result::ok).filter_map(|s| serde_json::from_str::<Item>(&s).ok()) {
+        if timer.state == "running" {
+            return Some(PetTimer { id: timer.id, running: true });
+        }
+        if paused.is_none() && timer.state == "paused" {
+            paused = Some(PetTimer { id: timer.id, running: false });
+        }
+    }
+    paused
+}
+fn timer_bounds(has_files: bool) -> RECT {
+    RECT { left: if has_files { 64 } else { 9 }, top: 111, right: 119, bottom: 132 }
+}
+unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: COLORREF) {
+    let fill = CreateSolidBrush(surface);
+    let old_brush = SelectObject(dc, fill.into());
+    let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let _ = RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(fill.into());
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, ink);
+    let mut text = wide(label);
+    let len = text.len() - 1;
+    DrawTextW(dc, &mut text[..len], &mut rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+}
+fn act_on_timer(app: tauri::AppHandle, timer: PetTimer) {
+    let action = timer.action().to_owned();
+    if let Some(core) = app.try_state::<Shared>() {
+        let _ = timer_action(app.clone(), core, timer.id, action);
+    }
+}
 unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let dc = BeginPaint(hwnd, &mut ps);
@@ -553,7 +601,7 @@ unsafe fn paint(hwnd: HWND) {
         bg,
     );
     let _ = DeleteObject(bg.into());
-    let (count, left, hover, appearance, pose, file_visible) = with_state(|state| {
+    let (count, left, hover, appearance, pose, file_visible, timer) = with_state(|state| {
         let count = state.files.len();
         let (pose, file_visible) = match state.motion {
             Some((phase, index, _)) => (
@@ -564,41 +612,30 @@ unsafe fn paint(hwnd: HWND) {
             None if count > 0 => (AnimationSet::reduced_motion_pose(AnimationPhase::Held), true),
             None => (AnimationSet::neutral_still_pose(), false),
         };
-        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_visible)
+        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_visible, state.timer.clone())
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
     SetMapMode(dc, MM_TEXT);
     pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_visible);
     let _ = RestoreDC(dc, mapped);
-    if count == 0 {
-        let _ = EndPaint(hwnd, &ps);
-        return;
-    }
-    // Opaque dark caption remains readable on either light or dark desktops.
     let palette = appearance.palette();
-    let caption = CreateSolidBrush(palette.surface);
-    let previous = SelectObject(dc, caption.into());
-    let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    let _ = RoundRect(dc, 9, 111, 119, 132, 8, 8);
-    SelectObject(dc, previous_pen);
-    SelectObject(dc, previous);
-    let _ = DeleteObject(caption.into());
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, palette.ink);
-    let label = format!("{count} held · {left}s");
-    let mut text = wide(&label);
-    let len = text.len() - 1;
-    DrawTextW(
-        dc,
-        &mut text[..len],
-        &mut RECT {
-            left: 9,
-            top: 111,
-            right: 119,
-            bottom: 132,
-        },
-        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-    );
+    if count > 0 {
+        let compact = timer.is_some();
+        let label = if compact { format!("{count} / {left}s") } else { format!("{count} held / {left}s") };
+        badge(dc, RECT { left: 9, top: 111, right: if compact { 61 } else { 119 }, bottom: 132 },
+            &label, palette.surface, palette.ink);
+    }
+    if let Some(timer) = timer {
+        let label = match (timer.running, count > 0) {
+            (true, true) => "Pause",
+            (false, true) => "Resume",
+            (true, false) => "Pause timer",
+            (false, false) => "Resume timer",
+        };
+        let (surface, ink) = if timer.running { (palette.accent, palette.surface) }
+            else { (palette.surface, palette.ink) };
+        badge(dc, timer_bounds(count > 0), label, surface, ink);
+    }
     let _ = EndPaint(hwnd, &ps);
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -683,6 +720,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         REFRESH_INDICATORS => {
+            with_state(|s| s.timer = pet_timer(&s.app));
+            let _ = InvalidateRect(Some(hwnd), None, false);
             crate::bar::repaint_theme();
             LRESULT(0)
         }
@@ -778,8 +817,19 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     clamp(hwnd, false);
                     persist_position(hwnd);
                 } else {
-                    if let Some(app) = with_state(|s| s.app.clone()) {
-                        crate::bar::toggle(&app, hwnd);
+                    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+                    let x = lp.0 as i16 as i32 * 96 / dpi;
+                    let y = (lp.0 >> 16) as i16 as i32 * 96 / dpi;
+                    if let Some((app, timer)) = with_state(|s| {
+                        let r = timer_bounds(!s.files.is_empty());
+                        let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+                        (s.app.clone(), s.timer.clone().filter(|_| hit))
+                    }) {
+                        if let Some(timer) = timer {
+                            act_on_timer(app, timer);
+                        } else {
+                            crate::bar::toggle(&app, hwnd);
+                        }
                     }
                 }
             }
@@ -803,6 +853,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 );
                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
                 let _ = AppendMenuW(menu, MF_STRING, 6, w!("Copy held files (then paste)"));
+                let timer = with_state(|s| s.timer.clone()).flatten();
+                if let Some(timer) = &timer {
+                    let label = if timer.running { w!("Pause timer") } else { w!("Resume timer") };
+                    let _ = AppendMenuW(menu, MF_STRING, 7, label);
+                }
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
                 let _ = AppendMenuW(menu, MF_STRING, 4, w!("Reset position"));
                 let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit (reminders stop)"));
@@ -819,6 +874,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 .0;
                 let _ = DestroyMenu(menu);
                 match action {
+                    7 => {
+                        if let (Some(app), Some(timer)) = (with_state(|s| s.app.clone()), timer) {
+                            act_on_timer(app, timer);
+                        }
+                    }
                     6 => {
                         let _ = copy_held(hwnd);
                     }
@@ -901,6 +961,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                 .unwrap_or_default();
             STATE.with(|s| {
                 *s.borrow_mut() = Some(State {
+                    timer: pet_timer(&app),
                     app: app.clone(),
                     control: output.clone(),
                     files: vec![],

@@ -19,6 +19,7 @@ type AgentTask = {
   id: string;
   title: string;
   prompt: string;
+  context?: string;
   projectId: string;
   workspace: string;
   model: string;
@@ -56,12 +57,15 @@ const states: Record<string, string> = {
   cancelled: "Cancelled",
   unknown: "Outcome unknown",
 };
-export default function AgentPanel({ projects }: { projects: Item[] }) {
+export default function AgentPanel({ projects, shelf }: { projects: Item[]; shelf: Item[] }) {
   const [tasks, setTasks] = useState<AgentTask[]>([]),
     [models, setModels] = useState<Model[]>([]),
     [model, setModel] = useState(""),
     [project, setProject] = useState(""),
     [prompt, setPrompt] = useState(""),
+    [includeNote, setIncludeNote] = useState(false),
+    [priorTask, setPriorTask] = useState(""),
+    [referencePaths, setReferencePaths] = useState(""),
     [write, setWrite] = useState(false),
     [ack, setAck] = useState(false),
     [open, setOpen] = useState(false),
@@ -116,6 +120,17 @@ export default function AgentPanel({ projects }: { projects: Item[] }) {
       setBusy(false);
     }
   }
+  const projectNote = projects.find((item) => item.id === project)?.note.trim();
+  const previousAnswers = tasks.filter(
+    (task) => task.projectId === project && task.state === "completed" && task.output.trim(),
+  );
+  const filePaths = referencePaths.split(/\r?\n/).map((path) => path.trim()).filter(Boolean);
+  const selectedAnswer = previousAnswers.find((task) => task.id === priorTask);
+  function clearContext() {
+    setIncludeNote(false);
+    setPriorTask("");
+    setReferencePaths("");
+  }
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -126,8 +141,14 @@ export default function AgentPanel({ projects }: { projects: Item[] }) {
         model,
         writeAccess: write,
         acknowledgeUnknown: ack,
+        context: {
+          includeProjectNote: Boolean(projectNote && includeNote),
+          priorTaskId: selectedAnswer?.id ?? null,
+          referencePaths: filePaths,
+        },
       });
       setPrompt("");
+      clearContext();
       setOpen(false);
       setAck(false);
     } catch {
@@ -179,7 +200,7 @@ export default function AgentPanel({ projects }: { projects: Item[] }) {
                 required
                 aria-label="Agent workspace"
                 value={project}
-                onChange={(e) => setProject(e.target.value)}
+                onChange={(e) => { setProject(e.target.value); clearContext(); }}
               >
                 <option value="">Choose a saved project</option>
                 {projects.map((p) => (
@@ -228,6 +249,61 @@ export default function AgentPanel({ projects }: { projects: Item[] }) {
               placeholder="What should Codex do in this workspace?"
             />
           </label>
+          <details className="agent-context">
+            <summary>Project memory and file references</summary>
+            <p className="explanation">
+              Choose what Codex gets for this request. It may send the selected context
+              and the contents of any files it reads to the Codex service.
+            </p>
+            {projectNote ? (
+              <>
+                <label className="check-label">
+                  <input type="checkbox" checked={includeNote} onChange={(e) => setIncludeNote(e.target.checked)} />
+                  Include saved project note
+                </label>
+                {includeNote && <pre className="context-preview">{projectNote.slice(0, 3000)}</pre>}
+              </>
+            ) : (
+              <p className="explanation">Save a note in Projects to reuse it here.</p>
+            )}
+            {previousAnswers.length > 0 && (
+              <label>
+                Previous Codex answer
+                <select value={selectedAnswer?.id ?? ""} onChange={(e) => setPriorTask(e.target.value)}>
+                  <option value="">None</option>
+                  {previousAnswers.map((task) => (
+                    <option key={task.id} value={task.id}>{task.title}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {selectedAnswer && <pre className="context-preview">{selectedAnswer.output.slice(0, 3000)}</pre>}
+            <label>
+              Reference files inside this project
+              <textarea
+                rows={3}
+                maxLength={8300}
+                value={referencePaths}
+                onChange={(e) => setReferencePaths(e.target.value)}
+                placeholder="One file path per line, e.g. docs/menu.pdf"
+              />
+            </label>
+            {shelf.some((item) => item.path) && (
+              <label>
+                Add a path from the Shelf
+                <select value="" disabled={filePaths.length >= 8} onChange={(e) => {
+                  const path = e.target.value;
+                  if (path && !filePaths.includes(path)) setReferencePaths([...filePaths, path].join("\n"));
+                }}>
+                  <option value="">Choose a staged file</option>
+                  {shelf.filter((item) => item.path).map((item) => (
+                    <option key={item.id} value={item.path}>{item.title} · {item.path}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <p className="explanation">Up to eight files. Notes and prior answers are sent as excerpts.</p>
+          </details>
           <label className="check-label">
             <input
               type="checkbox"
@@ -333,6 +409,12 @@ function TaskRow({
           ? " · Connection inactive; source state unverified"
           : ""}
       </p>
+      {t.context && (
+        <details className="agent-context">
+          <summary>Context selected for this request</summary>
+          <pre className="context-preview">{t.context}</pre>
+        </details>
+      )}
       {t.pending.map((p) => (
         <InteractionForm
           key={p.id}

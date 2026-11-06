@@ -30,10 +30,6 @@ const FILE_WIDTH: i32 = 680;
 const HEIGHT: i32 = 48;
 const ROW_HEIGHT: i32 = 40;
 const VISIBLE_ROWS: usize = 5;
-const RAIL_WIDTH: i32 = 40;
-const RAIL_HEIGHT: i32 = 152;
-const RAIL_ROW: i32 = 48;
-const RAIL_ACTIONS: [(&str, &str); 3] = [("⌕", "/f "), ("◷", "/t "), ("Pet", "/pet")];
 #[derive(Clone)]
 enum Action {
     Input(String),
@@ -70,7 +66,6 @@ struct Bar {
     hwnd: HWND,
     edit: HWND,
     status: HWND,
-    rail: HWND,
     click_hook: Option<HHOOK>,
     old_edit: WNDPROC,
     choices: Vec<(String, Action)>,
@@ -246,7 +241,7 @@ unsafe fn refresh() {
             let current = pet::appearance();
             change(|bar| bar.finder = true);
             choices(
-                [(Cat, "Cosmo · Tuxedo cat"), (Calico, "Calico"), (Dog, "Shiba Inu"), (Panda, "Panda"), (Husky, "Siberian Husky")]
+                [(Calico, "Calico"), (Dog, "Shiba Inu"), (Panda, "Panda")]
                     .into_iter()
                     .map(|(pet, label)| {
                         let label = if pet == current { format!("{label} · Current") } else { label.into() };
@@ -276,24 +271,18 @@ pub fn dismiss() {
     }
 }
 pub fn repaint_theme() {
-    if let Some((hwnd, rail)) = get(|bar| (bar.hwnd, bar.rail)) {
+    if let Some(hwnd) = get(|bar| bar.hwnd) {
         unsafe {
             let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_ALLCHILDREN);
-            if !rail.0.is_null() {
-                let _ = InvalidateRect(Some(rail), None, false);
-            }
         }
     }
 }
 unsafe fn hide() {
-    if let Some((h, rail, hook, search)) = change(|b| (b.hwnd, b.rail, b.click_hook.take(), b.search.clone())) {
+    if let Some((h, hook, search)) = change(|b| (b.hwnd, b.click_hook.take(), b.search.clone())) {
         if let Some(hook) = hook {
             let _ = UnhookWindowsHookEx(hook);
         }
         search.generation.fetch_add(1, Ordering::Relaxed);
-        if !rail.0.is_null() {
-            let _ = ShowWindow(rail, SW_HIDE);
-        }
         let _ = ShowWindow(h, SW_HIDE);
         if let Some(app) = get(|b| b.app.clone()) {
             crate::pet::bar_visibility(&app, false);
@@ -308,7 +297,7 @@ unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LR
             if let Ok(state) = state.try_borrow() {
                 if let Some(bar) = state.as_ref() {
                     let hit = WindowFromPoint(point);
-                    let inside = hit == bar.hwnd || hit == bar.rail
+                    let inside = hit == bar.hwnd
                         || (hit == bar.pet && wp.0 as u32 == WM_LBUTTONDOWN);
                     if !inside && !IsChild(bar.hwnd, hit).as_bool() {
                         let _ = PostMessageW(Some(bar.hwnd), OUTSIDE_CLICK, WPARAM(0), LPARAM(0));
@@ -321,7 +310,10 @@ unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LR
 }
 fn open_tools(app: tauri::AppHandle) {
     let h = app.clone();
-    let _ = app.run_on_main_thread(move || show_panel(&h));
+    let _ = app.run_on_main_thread(move || {
+        show_panel(&h);
+        let _ = h.emit("open-codex", ());
+    });
 }
 fn open_editor(path: String) -> Result<(), String> {
     if !Path::new(&path).is_absolute() || !Path::new(&path).is_dir() {
@@ -531,7 +523,7 @@ fn tool_matches(query: &str) -> Vec<(String, Action)> {
         })
         .map(|(_, label, completion)| {
             let action = match completion {
-                "/tools" => Action::Tools,
+                "/tools" | "/codex" => Action::Tools,
                 "/copy" => Action::Copy,
                 _ => Action::Complete(completion),
             };
@@ -559,7 +551,7 @@ unsafe fn layout(hwnd: HWND) {
         let _ = InvalidateRect(Some(hwnd), None, true);
     }
     let width = rect.right;
-    let start = s(43);
+    let start = s(16);
     let end = width - s(16);
     let status_width = if has_note { s(190).min(width / 2) } else { 0 };
     let _ = SetWindowPos(
@@ -694,12 +686,6 @@ unsafe fn paint(hwnd: HWND) {
     let old_brush = SelectObject(dc, surface.into());
     let old_pen = SelectObject(dc, outline.into());
     let _ = RoundRect(dc, 0, 0, rect.right, rect.bottom, scale(22), scale(22));
-    let search_pen = CreatePen(PS_SOLID, scale(2).max(1), palette.accent);
-    SelectObject(dc, search_pen.into());
-    SelectObject(dc, GetStockObject(NULL_BRUSH));
-    let _ = Ellipse(dc, scale(16), scale(17), scale(27), scale(28));
-    let _ = MoveToEx(dc, scale(25), scale(26), None);
-    let _ = LineTo(dc, scale(31), scale(32));
     if rect.bottom > scale(HEIGHT) {
         SelectObject(dc, outline.into());
         let _ = MoveToEx(dc, scale(12), scale(HEIGHT), None);
@@ -776,83 +762,9 @@ unsafe fn paint(hwnd: HWND) {
         }
         SelectObject(dc, previous_font);
     });
-    let _ = DeleteObject(search_pen.into());
     let _ = DeleteObject(outline.into());
     let _ = DeleteObject(surface.into());
     let _ = EndPaint(hwnd, &paint);
-}
-
-unsafe extern "system" fn rail_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    match msg {
-        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let dc = BeginPaint(hwnd, &mut ps);
-            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-            let s = |n| n * dpi / 96;
-            let palette = pet::appearance().palette();
-            let background = CreateSolidBrush(palette.surface);
-            let border = CreatePen(PS_SOLID, 1, palette.outline);
-            let mut client = RECT::default();
-            let _ = GetClientRect(hwnd, &mut client);
-            let _ = FillRect(dc, &client, HBRUSH(GetStockObject(BLACK_BRUSH).0));
-            let old_brush = SelectObject(dc, background.into());
-            let old_pen = SelectObject(dc, border.into());
-            if let Some((font, app)) = get(|bar| (bar.font, bar.app.clone())) {
-                let old_font = SelectObject(dc, font.into());
-                SetBkMode(dc, TRANSPARENT);
-                let (timer, tasks) = app.try_state::<Shared>()
-                    .and_then(|core| core.db.try_lock().ok().and_then(|db| rows(&db).ok()))
-                    .map(|items| (
-                        items.iter().any(|item| item.kind == "timer" && item.state == "running"),
-                        items.iter().any(|item| item.kind == "todo" && !item.done),
-                    )).unwrap_or_default();
-                for (index, (label, _)) in RAIL_ACTIONS.iter().enumerate() {
-                    let top = 4 + index as i32 * RAIL_ROW;
-                    let bottom = top + 36;
-                    let _ = Ellipse(dc, s(2), s(top), s(38), s(bottom));
-                    let mut text: Vec<_> = label.encode_utf16().collect();
-                    SetTextColor(dc, if index == 1 && timer { palette.accent } else { palette.ink });
-                    DrawTextW(dc, &mut text, &mut RECT {
-                        left: s(2), top: s(top), right: s(38), bottom: s(bottom),
-                    }, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-                }
-                let badge = CreateSolidBrush(palette.accent);
-                SelectObject(dc, badge.into());
-                SelectObject(dc, GetStockObject(NULL_PEN));
-                if timer {
-                    let _ = Ellipse(dc, s(29), s(56), s(36), s(63));
-                }
-                if tasks {
-                    let _ = Ellipse(dc, s(29), s(104), s(36), s(111));
-                }
-                SelectObject(dc, background.into());
-                let _ = DeleteObject(badge.into());
-                SelectObject(dc, old_font);
-            }
-            SelectObject(dc, old_pen);
-            SelectObject(dc, old_brush);
-            let _ = DeleteObject(border.into());
-            let _ = DeleteObject(background.into());
-            let _ = EndPaint(hwnd, &ps);
-            LRESULT(0)
-        }
-        WM_LBUTTONUP => {
-            let y = (lp.0 >> 16) as i16 as i32 * 96 / GetDpiForWindow(hwnd).max(96) as i32;
-            if y >= 4 && (y - 4) % RAIL_ROW < 36 {
-                let Some((_, command)) = RAIL_ACTIONS.get(((y - 4) / RAIL_ROW) as usize) else {
-                    return LRESULT(0);
-                };
-                fill(command);
-                if let Some((bar, edit)) = get(|b| (b.hwnd, b.edit)) {
-                    let _ = SetForegroundWindow(bar);
-                    let _ = SetFocus(Some(edit));
-                }
-            }
-            LRESULT(0)
-        }
-        _ => DefWindowProcW(hwnd, msg, wp, lp),
-    }
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1093,21 +1005,6 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
             result: Mutex::new(None),
             copy_result: Mutex::new(None),
         });
-        let rail_class = w!("DesktopBuddyActionRail");
-        RegisterClassW(&WNDCLASSW {
-            lpfnWndProc: Some(rail_proc),
-            hInstance: instance.into(),
-            lpszClassName: rail_class,
-            ..Default::default()
-        });
-        let rail = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-            rail_class, w!("Buddy actions"), WS_POPUP, 0, 0, RAIL_WIDTH, RAIL_HEIGHT,
-            None, None, Some(instance.into()), None,
-        ).unwrap_or_default();
-        if !rail.0.is_null() {
-            let _ = SetLayeredWindowAttributes(rail, COLORREF(0), 255, LWA_COLORKEY);
-        }
         BAR.with(|s| {
             *s.borrow_mut() = Some(Bar {
                 app: app.clone(),
@@ -1115,7 +1012,6 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 hwnd,
                 edit,
                 status,
-                rail,
                 click_hook: None,
                 old_edit,
                 choices: vec![],
@@ -1130,7 +1026,7 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
         });
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);
     }
-    let Some((hwnd, edit, rail)) = get(|b| (b.hwnd, b.edit, b.rail)) else {
+    let Some((hwnd, edit)) = get(|b| (b.hwnd, b.edit)) else {
         return;
     };
     fill("");
@@ -1140,9 +1036,6 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     let _ = SetFocus(Some(edit));
-    if !rail.0.is_null() {
-        let _ = ShowWindow(rail, SW_SHOWNOACTIVATE);
-    }
     let module = GetModuleHandleW(None).ok().map(Into::into);
     let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_mouse), module, 0).ok();
     change(|bar| bar.click_hook = hook);
@@ -1186,18 +1079,5 @@ unsafe fn position(hwnd: HWND, pet: HWND, width: i32, height: i32) {
         height,
         SWP_NOACTIVATE,
     );
-    if let Some(rail) = get(|bar| bar.rail).filter(|rail| !rail.0.is_null()) {
-        let (rw, rh) = (RAIL_WIDTH * dpi / 96, RAIL_HEIGHT * dpi / 96);
-        let gap = 8 * dpi / 96;
-        let right_room = r.right - anchor.right;
-        let left_room = anchor.left - r.left;
-        let rail_x = if right_room >= rw + gap || right_room >= left_room {
-            anchor.right + gap
-        } else {
-            anchor.left - gap - rw
-        }.clamp(r.left, (r.right - rw).max(r.left));
-        let rail_y = ((anchor.top + anchor.bottom - rh) / 2)
-            .clamp(r.top, (r.bottom - rh).max(r.top));
-        let _ = SetWindowPos(rail, Some(HWND_TOPMOST), rail_x, rail_y, rw, rh, SWP_NOACTIVATE);
-    }
+
 }

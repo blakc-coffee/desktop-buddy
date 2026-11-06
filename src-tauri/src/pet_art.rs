@@ -14,9 +14,9 @@ pub struct Palette {
 /// Supported pet appearances including both original and new species.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Appearance {
-    #[default]
     Cat,
     Dog,
+    #[default]
     Calico,
     Panda,
     Husky,
@@ -42,8 +42,7 @@ impl Appearance {
             "dog" => Self::Dog,
             "calico" => Self::Calico,
             "panda" => Self::Panda,
-            "husky" => Self::Husky,
-            _ => Self::Cat,
+            _ => Self::Calico,
         }
     }
 
