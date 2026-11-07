@@ -186,6 +186,20 @@ fn toggle_item(
     }
     Ok(())
 }
+
+fn complete_todo(db: &Connection, id: &str) -> Result<bool, String> {
+    let mut item = get(db, id)?;
+    if item.kind != "todo" {
+        return Err("This item is no longer a to-do.".into());
+    }
+    if item.done {
+        return Ok(false);
+    }
+    item.done = true;
+    put(db, &item)?;
+    Ok(true)
+}
+
 #[tauri::command]
 fn start_timer(
     app: tauri::AppHandle,
@@ -926,6 +940,30 @@ mod storage_tests {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE items(id TEXT PRIMARY KEY,kind TEXT NOT NULL,created INTEGER NOT NULL,payload TEXT NOT NULL);").unwrap();
         db
+    }
+    #[test]
+    fn completing_a_stale_todo_keeps_its_latest_data_and_never_reopens_it() {
+        let db = database();
+        let item = Item {
+            id: "todo".into(),
+            kind: "todo".into(),
+            title: "Updated after the menu opened".into(),
+            note: "Keep this note".into(),
+            ..Default::default()
+        };
+        put(&db, &item).unwrap();
+        assert!(complete_todo(&db, &item.id).unwrap());
+        assert!(!complete_todo(&db, &item.id).unwrap());
+        let completed = get(&db, &item.id).unwrap();
+        assert!(completed.done);
+        assert_eq!(completed.title, item.title);
+        assert_eq!(completed.note, item.note);
+        db.execute("DELETE FROM items WHERE id=?1", [&item.id]).unwrap();
+        assert!(complete_todo(&db, &item.id).is_err());
+        assert!(rows(&db).unwrap().is_empty());
+        put(&db, &Item { kind: "reminder".into(), ..item }).unwrap();
+        assert!(complete_todo(&db, "todo").is_err());
+        assert!(!get(&db, "todo").unwrap().done);
     }
     #[test]
     fn updates_preserve_one_identity_and_export_roundtrips() {

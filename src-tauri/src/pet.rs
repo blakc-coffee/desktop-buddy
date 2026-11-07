@@ -590,7 +590,7 @@ impl PetTimer {
 struct Indicators {
     timer: Option<PetTimer>,
     reminder: Option<ReminderMark>,
-    has_todos: bool,
+    todo_count: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -601,7 +601,7 @@ enum ReminderMark {
 
 impl Indicators {
     fn shows_paw(&self) -> bool {
-        self.has_todos || self.reminder.is_some()
+        self.todo_count > 0 || self.reminder.is_some()
     }
 
     fn visible_timer(&self) -> Option<&PetTimer> {
@@ -625,7 +625,7 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
         let mut paused = None;
         for item in items.filter_map(Result::ok).filter_map(|payload| serde_json::from_str::<Item>(&payload).ok()) {
             match item.kind.as_str() {
-                "todo" if !item.done => indicators.has_todos = true,
+                "todo" if !item.done => indicators.todo_count += 1,
                 "timer" if item.state == "running" && indicators.timer.is_none() => {
                     let left = remaining(&item, now(), ticks(), &core.run);
                     if left > 0 {
@@ -676,7 +676,7 @@ fn timer_bounds(has_files: bool) -> RECT {
     RECT { left: if has_files { 51 } else { 9 }, top: 111, right: 119, bottom: 132 }
 }
 
-const PAW_BOUNDS: RECT = RECT { left: 3, top: 3, right: 31, bottom: 31 };
+const PAW_BOUNDS: RECT = RECT { left: 3, top: 3, right: 47, bottom: 31 };
 
 unsafe fn paw_badge(dc: HDC, due: bool, palette: pet_art::Palette) {
     let surface = CreateSolidBrush(if due { palette.accent } else { palette.surface });
@@ -684,7 +684,7 @@ unsafe fn paw_badge(dc: HDC, due: bool, palette: pet_art::Palette) {
     let previous_brush = SelectObject(dc, surface.into());
     let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
     let r = PAW_BOUNDS;
-    let _ = Ellipse(dc, r.left, r.top, r.right, r.bottom);
+    let _ = Ellipse(dc, r.left, r.top, 31, r.bottom);
     SelectObject(dc, pads.into());
     for (left, top) in [(8, 13), (12, 9), (18, 9), (22, 13)] {
         let _ = Ellipse(dc, left, top, left + 5, top + 6);
@@ -704,8 +704,9 @@ unsafe fn show_todos(app: &tauri::AppHandle, hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else {
         return;
     };
-    let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("Open to-dos"));
+    let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("To-dos · choose an action"));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    let mut actions = Vec::new();
     match todos {
         None => { let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("Could not load to-dos")); }
         Some(todos) if todos.is_empty() => {
@@ -721,7 +722,15 @@ unsafe fn show_todos(app: &tauri::AppHandle, hwnd: HWND) {
                 }
                 let title = title.replace('&', "&&");
                 let label: Vec<_> = title.encode_utf16().chain(Some(0)).collect();
-                let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, PCWSTR(label.as_ptr()));
+                if let Ok(submenu) = CreatePopupMenu() {
+                    let command = actions.len() + 100;
+                    if AppendMenuW(submenu, MF_STRING, command, w!("Mark complete")).is_ok()
+                        && AppendMenuW(menu, MF_POPUP, submenu.0 as usize, PCWSTR(label.as_ptr())).is_ok() {
+                        actions.push(item.id.clone());
+                    } else {
+                        let _ = DestroyMenu(submenu);
+                    }
+                }
             }
             if todos.len() > LIMIT {
                 let label: Vec<_> = format!("{} more in Tasks", todos.len() - LIMIT).encode_utf16().chain(Some(0)).collect();
@@ -730,16 +739,44 @@ unsafe fn show_todos(app: &tauri::AppHandle, hwnd: HWND) {
         }
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    let _ = AppendMenuW(menu, MF_STRING, 2, w!("Open tools"));
     let _ = AppendMenuW(menu, MF_STRING, 1, w!("Close"));
     let mut rect = RECT::default();
     let _ = GetWindowRect(hwnd, &mut rect);
     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
     crate::bar::dismiss();
     let _ = SetForegroundWindow(hwnd);
-    let _ = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+    let action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
         rect.left + PAW_BOUNDS.left * dpi / 96, rect.top + PAW_BOUNDS.bottom * dpi / 96,
-        None, hwnd, None);
+        None, hwnd, None).0 as usize;
     let _ = DestroyMenu(menu);
+    // A second click after dismissal must not remain attached to this menu.
+    let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+    if action == 2 {
+        post_main(app, false);
+    } else if let Some(id) = action.checked_sub(100).and_then(|index| actions.get(index)) {
+        finish_todo(app, id);
+    }
+}
+
+fn finish_todo(app: &tauri::AppHandle, id: &str) {
+    if let Some(core) = app.try_state::<Shared>() {
+        let result = core.db.lock().map_err(err).and_then(|db| complete_todo(&db, id));
+        match result {
+            Ok(true) => {
+                changed(app, &core);
+                cue(app, Cue::TodoDone);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                if let Ok(mut warning) = core.warning.lock() {
+                    *warning = Some(format!("Could not complete to-do: {error}"));
+                }
+                let _ = app.emit("data-changed", ());
+                post_main(app, false);
+            }
+        }
+    }
 }
 unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: COLORREF) {
     let fill = CreateSolidBrush(surface);
@@ -803,7 +840,8 @@ unsafe fn paint(hwnd: HWND) {
         let timer = state.indicators.visible_timer().and_then(PetTimer::display);
         let awake = file_motion.is_some() || bar_open || timer.is_some_and(|(_, running)| running)
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
-        let paw = state.indicators.shows_paw().then_some(matches!(state.indicators.reminder, Some(ReminderMark::Due)));
+        let paw = state.indicators.shows_paw().then_some((
+            matches!(state.indicators.reminder, Some(ReminderMark::Due)), state.indicators.todo_count));
         (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, paw, awake, cue)
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
@@ -811,15 +849,19 @@ unsafe fn paint(hwnd: HWND) {
     pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_motion, awake, cue);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
-    let font = if count > 0 || timer.is_some() {
+    let font = if count > 0 || timer.is_some() || paw.is_some() {
         CreateFontW(-13, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"))
     } else {
         HFONT::default()
     };
     let previous_font = (!font.0.is_null()).then(|| SelectObject(dc, font.into()));
-    if let Some(due) = paw {
+    if let Some((due, pending)) = paw {
         paw_badge(dc, due, palette);
+        if pending > 0 {
+            let label = if pending > 9 { "9+".into() } else { pending.to_string() };
+            badge(dc, RECT { left: 27, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
+        }
     }
     if count > 0 {
         let compact = timer.is_some();

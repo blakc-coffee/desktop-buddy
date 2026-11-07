@@ -30,7 +30,7 @@ Quit an older Buddy instance from its tray menu before launching a newer executa
 | `/tools` | Open the detailed tools window |
 | `/copy` | Copy the file references currently held by the pet |
 
-Timer and reminder commands accept 1–1440 whole minutes. The pet shows the remaining time for a running or paused timer. Click the countdown to pause or resume. A small paw appears when you have open to-dos or a scheduled reminder. Click it to preview up to eight open to-dos. The paw brightens when a reminder is due. `/tools` and `/copy` are available when typed directly. Search shows the matching name, type, and location. It covers connected Windows drive roots and other configured roots within a bounded scan. Results can be partial.
+Timer and reminder commands accept 1–1440 whole minutes. The pet shows the remaining time for a running or paused timer. Click the countdown to pause or resume. A small paw appears when you have open to-dos or a scheduled reminder, with a pending to-do count capped at 9+. Click it to see up to eight open to-dos, choose a task, then select **Mark complete**. **Open tools** opens the detailed panel. The paw brightens when a reminder is due. `/tools` and `/copy` are available when typed directly. Search shows the matching name, type, and location. It covers connected Windows drive roots and other configured roots within a bounded scan. Results can be partial.
 
 ## Hand off files
 
@@ -82,7 +82,7 @@ npm ci
 .\scripts\build.ps1
 ```
 
-With the default Cargo output directory, run `src-tauri\target\release\desktop-buddy.exe`. The build script creates a standalone executable.
+With the default Cargo output directory, run `src-tauri\target\release\desktop-buddy.exe`. The build script checks for fresh frontend assets and a rebuilt executable, then prints its path and SHA-256 checksum. Pass `-OutputDirectory C:\path\to\release` to copy the standalone executable into a release folder.
 
 ```powershell
 npm run dev
