@@ -16,9 +16,12 @@ import {
   type Item,
   type Snapshot,
 } from "./domain";
+import { destinationPage, type PanelRequest } from "./panelNavigation";
+const BrowserFill = lazy(() => import("./BrowserFill"));
 const AgentPanel = lazy(() => import("./AgentPanel"));
-type Page = "Activity" | "Tasks" | "Projects" | "Shelf" | "Music" | "Settings";
+type Page = "Fill" | "Activity" | "Tasks" | "Projects" | "Shelf" | "Music" | "Settings";
 const paths: Record<string, string> = {
+  Fill: "M4 4h16v16H4zM4 9h16M8 14h8M8 17h5",
   Activity: "M3 12h4l3-8 4 16 3-8h4",
   Tasks: "M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01",
   Projects: "M3 7V5h6l2 2h10v13H3z",
@@ -177,6 +180,24 @@ export default function App() {
       { name: string; path: string; folder: boolean }[]
     >([]),
     [searching, setSearching] = useState(false);
+  const [navigation, setNavigation] = useState<PanelRequest | null>(null);
+  const latestNavigation = useRef(0);
+  function applyNavigation(request: PanelRequest | null) {
+    if (!request || request.id <= latestNavigation.current) return;
+    latestNavigation.current = request.id;
+    setNavigation(request);
+    setPage(destinationPage(request.destination));
+    if (request.destination === "timers") setTab("Timers");
+    if (request.destination === "reminders") setTab("Reminders");
+  }
+  function acknowledgeNavigation(id: number) {
+    if (native) void call("acknowledge_navigation", { id }).catch((error) => setError(String(error)));
+  }
+  useEffect(() => {
+    if (!data || !navigation || ["ask", "resume", "activity"].includes(navigation.destination)) return;
+    document.querySelector<HTMLElement>("h1")?.focus();
+    acknowledgeNavigation(navigation.id);
+  }, [data !== null, navigation]);
   const captureRef = useRef<HTMLInputElement>(null),
     importRef = useRef<HTMLInputElement>(null),
     refreshSeq = useRef(0),
@@ -208,12 +229,17 @@ export default function App() {
         const offCodex = await listen("open-codex", () => {
           if (alive) setPage("Activity");
         });
+        const offNavigation = await listen<PanelRequest>("panel-navigation", (event) => {
+          if (alive) applyNavigation(event.payload);
+        });
         if (alive) {
-          cleanup = () => { unlisten(); offCodex(); };
+          cleanup = () => { unlisten(); offCodex(); offNavigation(); };
+          void call<PanelRequest | null>("panel_navigation").then((request) => { if (alive) applyNavigation(request); }).catch((error) => setError(String(error)));
           void refresh();
         } else {
           unlisten();
           offCodex();
+          offNavigation();
         }
       });
     } else {
@@ -450,7 +476,7 @@ export default function App() {
           </span>
         </a>
         <nav aria-label="Main navigation">
-          {(["Activity", "Tasks", "Projects", "Shelf", "Music"] as Page[]).map(
+          {(["Activity", "Tasks", "Projects", "Shelf", "Fill", "Music"] as Page[]).map(
             (p) => (
               <button
                 key={p}
@@ -525,8 +551,8 @@ export default function App() {
         <div className="content">
           <div className="page-heading">
             <div>
-              <h1>
-                {page === "Activity"
+              <h1 tabIndex={-1}>
+                {page === "Fill" ? "Fill this page." : page === "Activity"
                   ? "A little less switching."
                   : page === "Tasks"
                     ? "Make room for focus."
@@ -539,7 +565,7 @@ export default function App() {
                           : "Make yourself at home."}
               </h1>
               <p>
-                {page === "Activity"
+                {page === "Fill" ? "Review the questions, generate answers, then fill." : page === "Activity"
                   ? "What needs you, and what comes next."
                   : page === "Tasks"
                     ? "Small tasks. Clear deadlines. One place."
@@ -588,6 +614,7 @@ export default function App() {
             </div>
           ) : (
             <>
+              {page === "Fill" && <Suspense fallback={<p>Loading page helper...</p>}><BrowserFill /></Suspense>}
               {page === "Activity" && (
                 <>
                   <Suspense
@@ -595,7 +622,7 @@ export default function App() {
                       <p className="explanation">Loading local agent tools…</p>
                     }
                   >
-                    <AgentPanel projects={projects} shelf={shelf} todos={items.filter((item) => item.kind === "todo")} />
+                    <AgentPanel navigation={navigation} onNavigated={acknowledgeNavigation} projects={projects} shelf={shelf} todos={items.filter((item) => item.kind === "todo")} />
                   </Suspense>
                   <section>
                     <div className="section-heading">

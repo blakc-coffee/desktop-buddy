@@ -26,6 +26,13 @@ export async function call<T = void>(
   const id = args.id as string;
   const item = s.items.find((i) => i.id === id);
   switch (command) {
+    case "rename_todo": {
+      if (!item || item.kind !== "todo") throw new Error("This item is no longer a todo.");
+      const title = String(args.title || "").trim();
+      if (!title || title.length > 240) throw new Error("Use a short todo title.");
+      item.title = title;
+      break;
+    }
     case "snapshot":
       return s as T;
     case "save_item": {

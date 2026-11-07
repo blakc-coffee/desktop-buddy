@@ -39,6 +39,10 @@ if ($OutputDirectory) {
     if ([IO.Path]::GetFullPath($releasePath) -ne $release.FullName) {
         Copy-Item -LiteralPath $release.FullName -Destination $releasePath -Force
     }
+    $taskBrowserHost = Join-Path $metadata.target_directory 'release/buddy-browser-host.exe'
+    if (!(Test-Path -LiteralPath $taskBrowserHost)) { throw 'Browser helper executable is missing.' }
+    Copy-Item -LiteralPath $taskBrowserHost -Destination (Join-Path $destination.FullName 'buddy-browser-host.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $taskProject 'browser-helper') -Destination $destination.FullName -Recurse -Force
 }
 [pscustomobject]@{
     Executable = $releasePath

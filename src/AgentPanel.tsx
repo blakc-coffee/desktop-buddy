@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { call, native } from "./bridge";
 import type { Item } from "./domain";
+import type { PanelRequest } from "./panelNavigation";
 import ProjectResume from "./ProjectResume";
 type Question = {
   id: string;
@@ -58,7 +59,7 @@ const states: Record<string, string> = {
   cancelled: "Cancelled",
   unknown: "Outcome unknown",
 };
-export default function AgentPanel({ projects, shelf, todos }: { projects: Item[]; shelf: Item[]; todos: Item[] }) {
+export default function AgentPanel({ projects, shelf, todos, navigation, onNavigated }: { projects: Item[]; shelf: Item[]; todos: Item[]; navigation?: PanelRequest | null; onNavigated?: (id: number) => void }) {
   const [tasks, setTasks] = useState<AgentTask[]>([]),
     [models, setModels] = useState<Model[]>([]),
     [model, setModel] = useState(""),
@@ -72,6 +73,16 @@ export default function AgentPanel({ projects, shelf, todos }: { projects: Item[
     [request, setRequest] = useState<"task" | "question" | null>(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
+  useEffect(() => {
+    if (navigation?.destination === "ask") setRequest("question");
+  }, [navigation?.id]);
+  useEffect(() => {
+    if (!navigation || !["ask", "resume", "activity"].includes(navigation.destination)) return;
+    if (navigation.destination === "ask" && request !== "question") return;
+    const target = navigation.destination === "resume" ? "#project-resume-heading" : navigation.destination === "ask" ? "#buddy-question-prompt" : "#codex-workspace-heading";
+    const element = document.querySelector<HTMLElement>(target);
+    if (element) { element.focus(); onNavigated?.(navigation.id); }
+  }, [navigation?.id, request]);
   const refresh = async () => {
     if (native) setTasks(await call<AgentTask[]>("agent_snapshot"));
   };
@@ -180,7 +191,7 @@ export default function AgentPanel({ projects, shelf, todos }: { projects: Item[
     <ProjectResume projects={projects} shelf={shelf} todos={todos} tasks={tasks} />
     <section className="agent-panel" aria-label="Managed Codex tasks">
       <div className="section-heading">
-        <h2>Codex workspace</h2>
+        <h2 id="codex-workspace-heading" tabIndex={-1}>Codex workspace</h2>
         <div className="button-row">
           <button className="small-button" disabled={!native || active || busy} onClick={() => toggleRequest("question")}>
             {asking ? "Close question" : "Ask about files"}
@@ -260,7 +271,7 @@ export default function AgentPanel({ projects, shelf, todos }: { projects: Item[
               aria-label={asking ? "Codex question" : "Codex request"}
               required
               maxLength={4000}
-              value={prompt}
+              id="buddy-question-prompt" value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={4}
               placeholder={asking ? "What does the menu list for Friday dinner?" : "What should Codex do in this workspace?"}

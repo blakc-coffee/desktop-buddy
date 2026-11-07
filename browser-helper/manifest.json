@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Desktop Buddy Page Helper",
+  "version": "0.1.0",
+  "description": "Connect the current page to Buddy for reviewed quiz and coding answers.",
+  "permissions": ["activeTab", "scripting", "nativeMessaging", "storage"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": {"service_worker": "worker.js", "type": "module"},
+  "action": {"default_title": "Connect this page to Buddy", "default_popup": "popup.html"}
+}

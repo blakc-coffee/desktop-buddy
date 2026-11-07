@@ -1,4 +1,43 @@
 @layer base,layout,components;
+
+.todo-window {
+  --todo-surface: #302420;
+  --todo-ink: #fdf7f2;
+  --todo-accent: #f5aa6e;
+  --todo-selection: #563a2c;
+  --todo-outline: #7d523c;
+  min-height: 100vh;
+  padding: 22px 20px;
+  background: var(--todo-surface);
+  color: var(--todo-ink);
+}
+body:has(.todo-window) { min-width: 280px; }
+.todo-window h1 { margin: 0 0 20px; font-size: 24px; font-weight: 600; }
+.todo-capture { display: flex; gap: 8px; margin-bottom: 16px; }
+.todo-window input, .todo-window button { font: inherit; color: inherit; }
+.todo-capture input { min-width: 0; flex: 1; padding: 10px 12px; background: var(--todo-surface); border: 1px solid var(--todo-outline); border-radius: 8px; }
+.todo-window input::placeholder { color: var(--todo-ink); opacity: .75; }
+.todo-capture button { border: 0; border-radius: 8px; padding: 8px 14px; color: var(--todo-surface); background: var(--todo-accent); cursor: pointer; }
+.todo-capture button:disabled { opacity: .55; cursor: default; }
+.todo-check-row { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--todo-outline); min-height: 48px; }
+.todo-check-row input[type=checkbox] { appearance: auto; width: 18px; height: 18px; accent-color: var(--todo-accent); cursor: pointer; flex: 0 0 18px; }
+.todo-check-row input[type=text], .todo-check-row input:not([type]) { min-width: 0; width: 100%; border: 0; border-radius: 4px; background: transparent; padding: 10px 4px; }
+.todo-check-row.is-done input:not([type=checkbox]) { text-decoration: line-through; opacity: .65; }
+.todo-window input:focus-visible, .todo-window button:focus-visible { outline: 2px solid var(--todo-accent); outline-offset: 2px; }
+.todo-error { color: #ffc7b9; overflow-wrap: anywhere; }
+.todo-empty { opacity: .8; }
+.fill-setup { max-width: 68ch; }
+.fill-setup li { margin-bottom: 8px; }
+.fill-connection, .fill-generate { display: grid; gap: 12px; margin: 18px 0; }
+.fill-question { margin: 18px 0; }
+.fill-question summary { cursor: pointer; font-weight: 600; }
+.fill-question pre, .fill-answer pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 280px; overflow: auto; background: var(--surface); padding: 14px; border-radius: 8px; }
+.fill-field { display: flex; flex-direction: row; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.fill-field > span { min-width: 0; overflow-wrap: anywhere; }
+.fill-field .muted { display: block; font-size: 12px; margin-top: 4px; }
+.fill-field input { flex: 0 0 18px; width: 18px; height: 18px; accent-color: var(--accent); }
+.fill-review { margin-top: 28px; }
+.fill-answer { padding: 12px 0; border-bottom: 1px solid var(--border); }
 @layer base {
   :root {
     font-family: "Segoe UI", system-ui, sans-serif;

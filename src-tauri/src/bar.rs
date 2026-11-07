@@ -1,4 +1,4 @@
-//! Small native command bar. WebView2 is only opened explicitly through /tools.
+//! Native command bar; detailed management windows are opened only on request.
 use super::*;
 use crate::commands::{self, Command as Parsed};
 use std::{
@@ -15,9 +15,10 @@ use windows::{
             SystemServices::{SS_ENDELLIPSIS, SS_NOPREFIX},
         },
         UI::{
-            Controls::{EM_SETLIMITTEXT, EM_SETSEL},
+            Controls::*,
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::*,
+            Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::*,
         },
     },
@@ -25,16 +26,25 @@ use windows::{
 const DONE: u32 = WM_APP + 30;
 const COPIED: u32 = WM_APP + 31;
 const OUTSIDE_CLICK: u32 = WM_APP + 32;
-const WIDTH: i32 = 460;
+const WIDTH: i32 = 500;
 const FILE_WIDTH: i32 = 680;
-const HEIGHT: i32 = 48;
-const ROW_HEIGHT: i32 = 40;
+const HEIGHT: i32 = 56;
+const ROW_HEIGHT: i32 = 48;
 const VISIBLE_ROWS: usize = 5;
 #[derive(Clone)]
 enum Action {
     Input(String),
     Complete(&'static str),
     Tools,
+    Panel(commands::Destination),
+    Todos,
+    Held,
+    Imports,
+    Feedback,
+    Preview(usize),
+    ShowPet,
+    HidePet,
+    ResetPet,
     Copy,
     Pet(crate::pet_art::Appearance),
     Open(String),
@@ -66,6 +76,7 @@ struct Bar {
     hwnd: HWND,
     edit: HWND,
     status: HWND,
+    actions: HWND,
     click_hook: Option<HHOOK>,
     old_edit: WNDPROC,
     choices: Vec<(String, Action)>,
@@ -81,7 +92,11 @@ struct Bar {
 }
 impl Bar {
     fn visible_rows(&self) -> usize {
-        if self.file_search { 8 } else { VISIBLE_ROWS }
+        let limit = if self.file_search { 8 } else { VISIBLE_ROWS };
+        let area = unsafe { work_area(self.pet) };
+        let scale = unsafe { GetDpiForWindow(self.pet).max(96) as i32 };
+        let available = (area.bottom - area.top) * 96 / scale;
+        limit.min(((available - HEIGHT - 24) / ROW_HEIGHT).max(1) as usize)
     }
 }
 thread_local! {static BAR:RefCell<Option<Bar>>=const{RefCell::new(None)};}
@@ -99,17 +114,22 @@ unsafe fn note(text: &str) {
         let value = wide(text);
         let empty = GetWindowTextLengthW(edit) == 0;
         let cue = wide(if empty { text } else { "" });
-        SendMessageW(edit, 0x1501, Some(WPARAM(1)), Some(LPARAM(cue.as_ptr() as isize)));
+        SendMessageW(
+            edit,
+            0x1501,
+            Some(WPARAM(1)),
+            Some(LPARAM(cue.as_ptr() as isize)),
+        );
         let inline = !empty && !text.is_empty();
-        let _ = SetWindowTextW(status, if inline { PCWSTR(value.as_ptr()) } else { w!("") });
-        let _ = ShowWindow(
+        let _ = SetWindowTextW(
             status,
             if inline {
-                SW_SHOWNOACTIVATE
+                PCWSTR(value.as_ptr())
             } else {
-                SW_HIDE
+                w!("")
             },
         );
+        let _ = ShowWindow(status, if inline { SW_SHOWNOACTIVATE } else { SW_HIDE });
         layout(hwnd);
     }
 }
@@ -133,6 +153,10 @@ unsafe fn show_choice() {
     if let Some((true, hwnd)) = get(|b| (b.finder, b.hwnd)) {
         note("");
         let _ = InvalidateRect(Some(hwnd), None, false);
+        return;
+    }
+    if GetWindowTextLengthW(get(|bar| bar.edit).unwrap_or_default()) > 0 {
+        note("");
         return;
     }
     let label = get(|b| {
@@ -162,7 +186,8 @@ unsafe fn refresh() {
     });
     if text.is_empty() {
         choices(
-            commands::suggestions("").into_iter()
+            commands::suggestions("")
+                .into_iter()
                 .map(|(hint, completion)| (hint.into(), Action::Complete(completion)))
                 .collect(),
         );
@@ -175,14 +200,32 @@ unsafe fn refresh() {
     } else {
         commands::parse(&text)
     };
-    if let Some((_, hint, completion)) = commands::definitions().into_iter().find(|(aliases, _, completion)| {
-        *completion != "/f " && completion.ends_with(' ') && aliases.iter().any(|alias| text.trim().eq_ignore_ascii_case(alias))
-    }) {
+    if let Some((_, hint, completion)) =
+        commands::definitions()
+            .into_iter()
+            .find(|(aliases, _, completion)| {
+                *completion != "/f "
+                    && completion.ends_with(' ')
+                    && aliases
+                        .iter()
+                        .any(|alias| text.trim().eq_ignore_ascii_case(alias))
+            })
+    {
         choices(vec![(String::new(), Action::Complete(completion))]);
         note(hint);
         return;
     }
-    if !matches!(command, Ok(Parsed::Tools | Parsed::Copy | Parsed::Pets | Parsed::Find(_))) {
+    if !matches!(
+        command,
+        Ok(Parsed::Tools
+            | Parsed::Panel(_)
+            | Parsed::Todos
+            | Parsed::Held
+            | Parsed::Imports
+            | Parsed::Copy
+            | Parsed::Pets
+            | Parsed::Find(_))
+    ) {
         let suggestions = commands::suggestions(&text);
         if !suggestions.is_empty() {
             choices(
@@ -220,11 +263,11 @@ unsafe fn refresh() {
             let mut result = Vec::new();
             for p in projects(&app) {
                 if p.title.to_lowercase().contains(&q.to_lowercase()) {
-                        result.push((
-                            format!("{} — open in editor", p.title),
-                            Action::Editor(p.path.clone()),
-                        ));
-                        result.push((format!("{} — open folder", p.title), Action::Open(p.path)));
+                    result.push((
+                        format!("{} — open in editor", p.title),
+                        Action::Editor(p.path.clone()),
+                    ));
+                    result.push((format!("{} — open folder", p.title), Action::Open(p.path)));
                 }
                 if result.len() >= 20 {
                     break;
@@ -237,6 +280,34 @@ unsafe fn refresh() {
             }
         }
         Ok(Parsed::Tools) => choices(vec![(String::new(), Action::Tools)]),
+        Ok(Parsed::Panel(destination)) => {
+            choices(vec![(String::new(), Action::Panel(destination))])
+        }
+        Ok(Parsed::Todos) => choices(vec![(String::new(), Action::Todos)]),
+        Ok(Parsed::Imports) => choices(vec![(String::new(), Action::Imports)]),
+        Ok(Parsed::Held) => {
+            change(|bar| bar.finder = true);
+            let files = pet::held_paths();
+            choices(
+                files
+                    .into_iter()
+                    .map(|path| {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        (
+                            format!("{}  \u{b7}  {}", name, path.display()),
+                            if path.is_dir() {
+                                Action::Open(path.display().to_string())
+                            } else {
+                                Action::OpenFile(path.display().to_string())
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+            if get(|bar| bar.choices.is_empty()).unwrap_or(true) {
+                note("The pouch is empty. Drop files onto your pet.");
+            }
+        }
         Ok(Parsed::Copy) => choices(vec![(String::new(), Action::Copy)]),
         Ok(Parsed::Pets) => {
             use crate::pet_art::Appearance::*;
@@ -246,7 +317,11 @@ unsafe fn refresh() {
                 [(Calico, "Calico"), (Dog, "Shiba Inu"), (Panda, "Panda")]
                     .into_iter()
                     .map(|(pet, label)| {
-                        let label = if pet == current { format!("{label} · Current") } else { label.into() };
+                        let label = if pet == current {
+                            format!("{label} · Current")
+                        } else {
+                            label.into()
+                        };
                         (label, Action::Pet(pet))
                     })
                     .collect(),
@@ -293,7 +368,12 @@ unsafe fn hide() {
 }
 
 unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if code >= 0 && matches!(wp.0 as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN) {
+    if code >= 0
+        && matches!(
+            wp.0 as u32,
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+        )
+    {
         let point = (*(lp.0 as *const MSLLHOOKSTRUCT)).pt;
         BAR.with(|state| {
             if let Ok(state) = state.try_borrow() {
@@ -306,7 +386,8 @@ unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LR
                     } else {
                         false
                     };
-                    let inside = menu_click || hit == bar.hwnd
+                    let inside = menu_click
+                        || hit == bar.hwnd
                         || (hit == bar.pet && wp.0 as u32 == WM_LBUTTONDOWN);
                     if !inside && !IsChild(bar.hwnd, hit).as_bool() {
                         let _ = PostMessageW(Some(bar.hwnd), OUTSIDE_CLICK, WPARAM(0), LPARAM(0));
@@ -318,12 +399,9 @@ unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LR
     CallNextHookEx(None, code, wp, lp)
 }
 fn open_tools(app: tauri::AppHandle) {
-    let h = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        show_panel(&h);
-        let _ = h.emit("open-codex", ());
-    });
+    crate::navigation::open(app, commands::Destination::Activity);
 }
+
 fn open_editor(path: String) -> Result<(), String> {
     if !Path::new(&path).is_absolute() || !Path::new(&path).is_dir() {
         return Err("Workspace folder no longer exists.".into());
@@ -358,7 +436,10 @@ unsafe fn execute() {
         }
         return;
     };
-    let opens_path = matches!(&action, Action::Open(_) | Action::OpenFile(_) | Action::Editor(_));
+    let opens_path = matches!(
+        &action,
+        Action::Open(_) | Action::OpenFile(_) | Action::Editor(_)
+    );
     let result = match action {
         Action::Complete(value) => {
             fill(value);
@@ -401,6 +482,40 @@ unsafe fn execute() {
             open_tools(app);
             return;
         }
+        Action::Panel(destination) => {
+            hide();
+            crate::navigation::open(app, destination);
+            return;
+        }
+        Action::Todos => {
+            hide();
+            crate::navigation::todo(app, pet::appearance().palette());
+            return;
+        }
+        Action::Held => {
+            fill("/held");
+            return;
+        }
+        Action::Imports => {
+            let path = app.state::<Shared>().data_path.join("drag-cache");
+            std::fs::create_dir_all(&path)
+                .map_err(err)
+                .and_then(|_| open_path(path.display().to_string()))
+                .map(|_| "Imported files folder opened.".to_string())
+        }
+        Action::Feedback => return,
+        Action::Preview(index) => {
+            hide();
+            pet::preview(&app, index);
+            return;
+        }
+        Action::ShowPet => pet::pet_show(app.clone()).map(|_| "Pet shown.".to_string()),
+        Action::HidePet => {
+            hide();
+            let _ = pet::pet_hide(app);
+            return;
+        }
+        Action::ResetPet => pet::reset(&app).map(|_| "Pet position reset.".to_string()),
         Action::Pet(appearance) => {
             pet::set_appearance(&app, appearance);
             fill("");
@@ -411,7 +526,12 @@ unsafe fn execute() {
         Action::OpenFile(path) => {
             let path = wide(&path);
             let result = windows::Win32::UI::Shell::ShellExecuteW(
-                None, w!("open"), PCWSTR(path.as_ptr()), None, None, SW_SHOWNORMAL,
+                None,
+                w!("open"),
+                PCWSTR(path.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
             );
             if result.0 as isize > 32 {
                 Ok("File opened.".into())
@@ -448,10 +568,14 @@ unsafe fn execute() {
             if opens_path {
                 pet::cue(&app, crate::pet_art::Cue::FileOpened);
             }
+            fill("");
             choices(vec![]);
             note(&message);
         }
-        Err(e) => note(&e),
+        Err(e) => {
+            change(|bar| bar.finder = true);
+            choices(vec![(e, Action::Feedback)]);
+        }
     }
 }
 unsafe fn fill(value: &str) {
@@ -532,23 +656,253 @@ fn tool_matches(query: &str) -> Vec<(String, Action)> {
         .into_iter()
         .filter(|(aliases, label, _)| {
             finder::match_rank(label, query).is_some()
-                || aliases.iter().any(|alias| finder::match_rank(alias.trim_start_matches('/'), query).is_some())
+                || aliases
+                    .iter()
+                    .any(|alias| finder::match_rank(alias.trim_start_matches('/'), query).is_some())
         })
         .map(|(_, label, completion)| {
             let action = match completion {
-                "/tools" | "/codex" => Action::Tools,
-                "/copy" => Action::Copy,
-                _ => Action::Complete(completion),
+                "/tools" | "/actions" => Action::Tools,
+                value => match commands::parse(value) {
+                    Ok(Parsed::Panel(destination)) => Action::Panel(destination),
+                    Ok(Parsed::Todos) => Action::Todos,
+                    Ok(Parsed::Held) => Action::Held,
+                    Ok(Parsed::Imports) => Action::Imports,
+                    _ => Action::Complete(completion),
+                },
             };
             (label.into(), action)
         })
         .collect()
 }
+unsafe fn show_actions() {
+    let Some((hwnd, button)) = get(|bar| (bar.hwnd, bar.actions)) else {
+        return;
+    };
+    let Ok(menu) = CreatePopupMenu() else {
+        return;
+    };
+    let mut actions = Vec::new();
+    unsafe fn add(menu: HMENU, actions: &mut Vec<Action>, label: &str, action: Action) {
+        actions.push(action);
+        let text = wide(label);
+        let _ = AppendMenuW(menu, MF_STRING, actions.len(), PCWSTR(text.as_ptr()));
+    }
+    unsafe fn command(menu: HMENU, actions: &mut Vec<Action>, completion: &str) {
+        let Some((_, label, _)) = commands::definitions()
+            .into_iter()
+            .find(|(_, _, value)| *value == completion)
+        else {
+            return;
+        };
+        let title = label
+            .split_once(" \u{b7} ")
+            .map(|(_, title)| title)
+            .unwrap_or(label);
+        let action = match commands::parse(completion) {
+            Ok(Parsed::Panel(destination)) => Action::Panel(destination),
+            Ok(Parsed::Todos) => Action::Todos,
+            Ok(Parsed::Held) => Action::Held,
+            Ok(Parsed::Imports) => Action::Imports,
+            _ => Action::Complete(
+                commands::definitions()
+                    .into_iter()
+                    .find(|(_, _, value)| *value == completion)
+                    .unwrap()
+                    .2,
+            ),
+        };
+        add(
+            menu,
+            actions,
+            &format!("{}\t{}", title, completion.trim()),
+            action,
+        );
+    }
+    unsafe fn attach(menu: HMENU, child: HMENU, label: &str) {
+        let text = wide(label);
+        if AppendMenuW(menu, MF_POPUP, child.0 as usize, PCWSTR(text.as_ptr())).is_err() {
+            let _ = DestroyMenu(child);
+        }
+    }
+    for completion in ["/todos", "/ask", "/resume", "/fill"] {
+        command(menu, &mut actions, completion);
+    }
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    for (label, completions) in [
+        (
+            "Tasks and focus",
+            &["/t ", "/d ", "/r ", "/timers", "/reminders"][..],
+        ),
+        (
+            "Files and projects",
+            &["/f ", "/w ", "/projects", "/shelf", "/held", "/imports"][..],
+        ),
+    ] {
+        if let Ok(child) = CreatePopupMenu() {
+            for completion in completions {
+                command(child, &mut actions, completion);
+            }
+            if label == "Files and projects" {
+                add(child, &mut actions, "Copy held files", Action::Copy);
+            }
+            attach(menu, child, label);
+        }
+    }
+    if let Ok(child) = CreatePopupMenu() {
+        command(child, &mut actions, "/pet");
+        add(child, &mut actions, "Show pet", Action::ShowPet);
+        add(child, &mut actions, "Hide pet", Action::HidePet);
+        add(child, &mut actions, "Reset pet position", Action::ResetPet);
+        if let Ok(motion) = CreatePopupMenu() {
+            for (index, set) in pet::appearance().animation_sets().iter().enumerate() {
+                add(motion, &mut actions, set.name, Action::Preview(index));
+            }
+            attach(child, motion, "Try a motion");
+        }
+        command(child, &mut actions, "/settings");
+        attach(menu, child, "Pet and appearance");
+    }
+    for completion in ["/music", "/codex"] {
+        command(menu, &mut actions, completion);
+    }
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    add(menu, &mut actions, "Open tools", Action::Tools);
+    let mut rect = RECT::default();
+    let _ = GetWindowRect(button, &mut rect);
+    change(|bar| bar.menu_active = true);
+    let selected = crate::menu_theme::track(
+        menu,
+        hwnd,
+        rect.left,
+        rect.bottom,
+        pet::appearance().palette(),
+    );
+    change(|bar| bar.menu_active = false);
+    if let Some(action) = selected
+        .checked_sub(1)
+        .and_then(|index| actions.get(index as usize))
+        .cloned()
+    {
+        choices(vec![(String::new(), action)]);
+        execute();
+    }
+}
+unsafe fn draw_actions(
+    dc: HDC,
+    rect: RECT,
+    state: ODS_FLAGS,
+    palette: crate::pet_art::Palette,
+    dpi: u32,
+    font: HFONT,
+) {
+    let scale = |value: i32| value * dpi as i32 / 96;
+    let brush = CreateSolidBrush(if state.0 & ODS_SELECTED.0 != 0 {
+        palette.selection
+    } else {
+        palette.surface
+    });
+    let pen = CreatePen(PS_SOLID, 1, palette.outline);
+    let old_brush = SelectObject(dc, brush.into());
+    let old_pen = SelectObject(dc, pen.into());
+    let _ = RoundRect(
+        dc,
+        rect.left,
+        rect.top,
+        rect.right,
+        rect.bottom,
+        scale(12),
+        scale(12),
+    );
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, palette.ink);
+    let old_font = SelectObject(dc, font.into());
+    let mut bounds = rect;
+    let mut label: Vec<_> = "Actions".encode_utf16().collect();
+    DrawTextW(
+        dc,
+        &mut label,
+        &mut bounds,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if state.0 & ODS_FOCUS.0 != 0 {
+        let _ = DrawFocusRect(dc, &rect);
+    }
+    SelectObject(dc, old_font);
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(pen.into());
+    let _ = DeleteObject(brush.into());
+}
+unsafe fn draw_result_icon(
+    dc: HDC,
+    left: i32,
+    top: i32,
+    dpi: u32,
+    action: &Action,
+    color: COLORREF,
+) {
+    let s = |value: i32| value * dpi as i32 / 96;
+    let pen = CreatePen(PS_SOLID, s(1).max(1), color);
+    let old_pen = SelectObject(dc, pen.into());
+    let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    let line = |x1, y1, x2, y2| {
+        let _ = MoveToEx(dc, left + s(x1), top + s(y1), None);
+        let _ = LineTo(dc, left + s(x2), top + s(y2));
+    };
+    match action {
+        Action::Open(_) => {
+            line(2, 7, 2, 19);
+            line(2, 19, 23, 19);
+            line(23, 19, 23, 7);
+            line(23, 7, 11, 7);
+            line(11, 7, 8, 4);
+            line(8, 4, 2, 4);
+            line(2, 4, 2, 7);
+        }
+        Action::OpenFile(_) => {
+            line(5, 2, 16, 2);
+            line(16, 2, 22, 8);
+            line(22, 8, 22, 22);
+            line(22, 22, 5, 22);
+            line(5, 22, 5, 2);
+            line(16, 2, 16, 8);
+            line(16, 8, 22, 8);
+            line(9, 13, 18, 13);
+            line(9, 17, 18, 17);
+        }
+        Action::Pet(_) => {
+            let _ = Ellipse(dc, left + s(7), top + s(11), left + s(19), top + s(21));
+            for (x, y) in [(3, 7), (9, 2), (15, 2), (21, 7)] {
+                let _ = Ellipse(dc, left + s(x), top + s(y), left + s(x + 4), top + s(y + 5));
+            }
+        }
+        _ => {
+            line(5, 18, 19, 4);
+            line(9, 4, 19, 4);
+            line(19, 4, 19, 14);
+        }
+    }
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    let _ = DeleteObject(pen.into());
+}
 unsafe fn layout(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let s = |v: i32| v * dpi as i32 / 96;
-    let Some((edit, status, pet, rows, file_search)) = get(|b| {
-        (b.edit, b.status, b.pet, if b.finder { b.choices.len().min(b.visible_rows()) } else { 0 }, b.file_search)
+    let Some((edit, status, actions, pet, rows, file_search)) = get(|b| {
+        (
+            b.edit,
+            b.status,
+            b.actions,
+            b.pet,
+            if b.finder {
+                b.choices.len().min(b.visible_rows())
+            } else {
+                0
+            },
+            b.file_search,
+        )
     }) else {
         return;
     };
@@ -565,13 +919,13 @@ unsafe fn layout(hwnd: HWND) {
     }
     let width = rect.right;
     let start = s(16);
-    let end = width - s(16);
-    let status_width = if has_note { s(190).min(width / 2) } else { 0 };
+    let end = width - s(106);
+    let status_width = if has_note { s(130).min(width / 3) } else { 0 };
     let _ = SetWindowPos(
         edit,
         None,
         start,
-        s(14),
+        s(18),
         (end - start - status_width).max(1),
         s(22),
         SWP_NOZORDER,
@@ -580,9 +934,18 @@ unsafe fn layout(hwnd: HWND) {
         status,
         None,
         end - status_width + s(8),
-        s(14),
+        s(18),
         (status_width - s(8)).max(1),
         s(22),
+        SWP_NOZORDER,
+    );
+    let _ = SetWindowPos(
+        actions,
+        None,
+        width - s(92),
+        s(10),
+        s(80),
+        s(36),
         SWP_NOZORDER,
     );
     if get(|b| b.dpi) != Some(dpi) {
@@ -600,7 +963,7 @@ unsafe fn layout(hwnd: HWND) {
             CLIP_DEFAULT_PRECIS,
             DEFAULT_QUALITY,
             DEFAULT_PITCH.0 as u32,
-            w!("Trebuchet MS"),
+            w!("Segoe UI"),
         );
         let old = change(|b| {
             let old = b.font;
@@ -608,7 +971,7 @@ unsafe fn layout(hwnd: HWND) {
             b.dpi = dpi;
             old
         });
-        for h in [edit, status] {
+        for h in [edit, status, actions] {
             SendMessageW(
                 h,
                 WM_SETFONT,
@@ -630,12 +993,17 @@ unsafe fn browse(forward: bool) -> bool {
             return false;
         }
         bar.selected = if bar.selected >= count {
-            if forward { 0 } else { count - 1 }
+            if forward {
+                0
+            } else {
+                count - 1
+            }
         } else {
             (bar.selected + if forward { 1 } else { count - 1 }) % count
         };
         true
-    }).unwrap_or(false);
+    })
+    .unwrap_or(false);
     if changed {
         show_choice();
     }
@@ -654,6 +1022,36 @@ unsafe fn theme_edit_menu(menu: HMENU) {
             bar.menu_theme = crate::menu_theme::prepare(menu, bar.edit, palette);
         }
     });
+}
+
+unsafe extern "system" fn actions_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if msg == WM_KEYDOWN {
+        match wp.0 as u16 {
+            value if value == VK_ESCAPE.0 => {
+                hide();
+                return LRESULT(0);
+            }
+            value if value == VK_TAB.0 => {
+                if let Some(edit) = get(|bar| bar.edit) {
+                    let _ = SetFocus(Some(edit));
+                }
+                return LRESULT(0);
+            }
+            value if value == VK_RETURN.0 || value == VK_F4.0 => {
+                show_actions();
+                return LRESULT(0);
+            }
+            _ => {}
+        }
+    }
+    DefSubclassProc(hwnd, msg, wp, lp)
 }
 
 unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -683,6 +1081,10 @@ unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
     if msg == WM_MOUSEWHEEL && !composing && browse(((wp.0 >> 16) as i16) < 0) {
         return LRESULT(0);
     }
+    if msg == WM_KEYDOWN && !composing && wp.0 as u16 == VK_F4.0 {
+        show_actions();
+        return LRESULT(0);
+    }
     if msg == WM_CHAR && !composing && matches!(wp.0, 9 | 13 | 27) {
         return LRESULT(0);
     }
@@ -701,6 +1103,8 @@ unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     get(|b| b.choices.get(b.selected).map(|row| row.1.clone()))
                 {
                     fill(value);
+                } else if let Some(actions) = get(|bar| bar.actions) {
+                    let _ = SetFocus(Some(actions));
                 }
                 return LRESULT(0);
             }
@@ -713,16 +1117,77 @@ unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
         }
     }
     let original = get(|b| b.old_edit).flatten();
-    CallWindowProcW(original, hwnd, msg, wp, lp)
+    let result = CallWindowProcW(original, hwnd, msg, wp, lp);
+    if msg == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 {
+        let mut cue = [0u16; 1025];
+        SendMessageW(
+            hwnd,
+            0x1502,
+            Some(WPARAM(cue.as_mut_ptr() as usize)),
+            Some(LPARAM(cue.len() as isize)),
+        );
+        let length = cue
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(cue.len());
+        if length > 0 {
+            let dc = GetDC(Some(hwnd));
+            let palette = pet::appearance().palette();
+            let mut bounds = RECT::default();
+            let _ = GetClientRect(hwnd, &mut bounds);
+            let brush = CreateSolidBrush(palette.surface);
+            let _ = FillRect(dc, &bounds, brush);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, palette.accent);
+            let font = get(|bar| bar.font).unwrap_or_default();
+            let old = SelectObject(dc, font.into());
+            DrawTextW(
+                dc,
+                &mut cue[..length],
+                &mut bounds,
+                DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+            SelectObject(dc, old);
+            let _ = DeleteObject(brush.into());
+            ReleaseDC(Some(hwnd), dc);
+        }
+    }
+    result
 }
 unsafe fn paint(hwnd: HWND) {
     let mut paint = PAINTSTRUCT::default();
     let dc = BeginPaint(hwnd, &mut paint);
     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-    let scale = |value| value * dpi / 96;
     let mut rect = RECT::default();
     let _ = GetClientRect(hwnd, &mut rect);
     let palette = pet::appearance().palette();
+    get(|bar| {
+        render_bar(
+            dc,
+            rect,
+            dpi as u32,
+            palette,
+            bar.font,
+            &bar.choices,
+            bar.selected,
+            bar.visible_rows(),
+            bar.finder,
+        )
+    });
+    let _ = EndPaint(hwnd, &paint);
+}
+unsafe fn render_bar(
+    dc: HDC,
+    rect: RECT,
+    dpi: u32,
+    palette: crate::pet_art::Palette,
+    font: HFONT,
+    rows: &[(String, Action)],
+    selected: usize,
+    visible_rows: usize,
+    finder: bool,
+) {
+    let scale = |value: i32| value * dpi as i32 / 96;
     let surface = CreateSolidBrush(palette.surface);
     let outline = CreatePen(PS_SOLID, 1, palette.outline);
     let _ = FillRect(dc, &rect, surface);
@@ -736,78 +1201,91 @@ unsafe fn paint(hwnd: HWND) {
     }
     SelectObject(dc, old_brush);
     SelectObject(dc, old_pen);
-    get(|bar| {
-        let previous_font = SelectObject(dc, bar.font.into());
+    {
+        let previous_font = SelectObject(dc, font.into());
         SetBkMode(dc, TRANSPARENT);
-        if !bar.finder {
-            SelectObject(dc, previous_font);
-            return;
-        }
-        let visible_rows = bar.visible_rows();
-        let first = bar.selected / visible_rows * visible_rows;
-        for (index, (label, action)) in bar.choices.iter().enumerate().skip(first).take(visible_rows) {
-            let top = HEIGHT + (index - first) as i32 * ROW_HEIGHT;
-            let mut bounds = RECT {
-                left: scale(12),
-                top: scale(top + 3),
-                right: rect.right - scale(12),
-                bottom: scale(top + ROW_HEIGHT - 2),
-            };
-            if index == bar.selected {
-                let highlight = CreateSolidBrush(palette.selection);
-                let old = SelectObject(dc, highlight.into());
-                let pen = SelectObject(dc, GetStockObject(NULL_PEN));
-                let _ = RoundRect(dc, bounds.left, bounds.top, bounds.right, bounds.bottom, scale(9), scale(9));
-                SelectObject(dc, pen);
-                SelectObject(dc, old);
-                let _ = DeleteObject(highlight.into());
-            }
-            SetTextColor(dc, if index == bar.selected { palette.accent } else { palette.ink });
-            bounds.left += scale(8);
-            bounds.right -= scale(8);
-            let symbol = match action {
-                Action::Open(_) => "▰",
-                Action::OpenFile(path) => match Path::new(path).extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase).as_deref() {
-                    Some("pdf") => "PDF",
-                    Some("xls" | "xlsx" | "xlsm" | "csv" | "ods") => "▦",
-                    Some("jpg" | "jpeg" | "png" | "webp" | "gif") => "▧",
-                    Some("zip" | "7z" | "rar") => "▣",
-                    _ => "▤",
-                },
-                _ => "›",
-            };
-            let mut icon: Vec<_> = symbol.encode_utf16().collect();
-            let icon_top = (bounds.top + bounds.bottom - scale(28)) / 2;
-            let mut icon_bounds = RECT {
-                left: bounds.left, top: icon_top, right: bounds.left + scale(28), bottom: icon_top + scale(28),
-            };
-            let chip = CreateSolidBrush(palette.selection);
-            let previous_brush = SelectObject(dc, chip.into());
-            let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-            let _ = Ellipse(dc, icon_bounds.left, icon_bounds.top, icon_bounds.right, icon_bounds.bottom);
-            SelectObject(dc, previous_pen);
-            SelectObject(dc, previous_brush);
-            let _ = DeleteObject(chip.into());
-            DrawTextW(dc, &mut icon, &mut icon_bounds, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
-            bounds.left += scale(40);
-            if let Some((name, detail)) = label.split_once("  ·  ") {
-                let mut title_rect = RECT { bottom: bounds.top + scale(16), ..bounds };
-                let mut title: Vec<_> = name.encode_utf16().collect();
-                DrawTextW(dc, &mut title, &mut title_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-                bounds.top += scale(15);
-                SetTextColor(dc, palette.accent);
-                let mut detail: Vec<_> = detail.encode_utf16().collect();
-                DrawTextW(dc, &mut detail, &mut bounds, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-            } else {
-                let mut label: Vec<_> = label.encode_utf16().collect();
-                DrawTextW(dc, &mut label, &mut bounds, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if finder {
+            let first = selected / visible_rows * visible_rows;
+            for (index, (label, action)) in rows.iter().enumerate().skip(first).take(visible_rows) {
+                let top = HEIGHT + (index - first) as i32 * ROW_HEIGHT;
+                let mut bounds = RECT {
+                    left: scale(12),
+                    top: scale(top + 3),
+                    right: rect.right - scale(12),
+                    bottom: scale(top + ROW_HEIGHT - 2),
+                };
+                if index == selected {
+                    let highlight = CreateSolidBrush(palette.selection);
+                    let old = SelectObject(dc, highlight.into());
+                    let pen = SelectObject(dc, GetStockObject(NULL_PEN));
+                    let _ = RoundRect(
+                        dc,
+                        bounds.left,
+                        bounds.top,
+                        bounds.right,
+                        bounds.bottom,
+                        scale(9),
+                        scale(9),
+                    );
+                    SelectObject(dc, pen);
+                    SelectObject(dc, old);
+                    let _ = DeleteObject(highlight.into());
+                }
+                SetTextColor(
+                    dc,
+                    if index == selected {
+                        palette.accent
+                    } else {
+                        palette.ink
+                    },
+                );
+                bounds.left += scale(8);
+                bounds.right -= scale(8);
+                draw_result_icon(
+                    dc,
+                    bounds.left,
+                    (bounds.top + bounds.bottom - scale(22)) / 2,
+                    dpi as u32,
+                    action,
+                    palette.accent,
+                );
+                bounds.left += scale(40);
+                if let Some((name, detail)) = label.split_once("  ·  ") {
+                    let mut title_rect = RECT {
+                        bottom: bounds.top + scale(16),
+                        ..bounds
+                    };
+                    let mut title: Vec<_> = name.encode_utf16().collect();
+                    DrawTextW(
+                        dc,
+                        &mut title,
+                        &mut title_rect,
+                        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                    );
+                    bounds.top += scale(15);
+                    SetTextColor(dc, palette.accent);
+                    let mut detail: Vec<_> = detail.encode_utf16().collect();
+                    DrawTextW(
+                        dc,
+                        &mut detail,
+                        &mut bounds,
+                        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                    );
+                } else {
+                    let mut label: Vec<_> = label.encode_utf16().collect();
+                    DrawTextW(
+                        dc,
+                        &mut label,
+                        &mut bounds,
+                        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+                    );
+                }
             }
         }
         SelectObject(dc, previous_font);
-    });
+    }
     let _ = DeleteObject(outline.into());
     let _ = DeleteObject(surface.into());
-    let _ = EndPaint(hwnd, &paint);
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -826,6 +1304,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             browse(((wp.0 >> 16) as i16) < 0);
             LRESULT(0)
         }
+        WM_DRAWITEM if wp.0 == 4 => {
+            let item = &*(lp.0 as *const DRAWITEMSTRUCT);
+            draw_actions(
+                item.hDC,
+                item.rcItem,
+                item.itemState,
+                pet::appearance().palette(),
+                GetDpiForWindow(hwnd).max(96),
+                get(|bar| bar.font).unwrap_or_default(),
+            );
+            LRESULT(1)
+        }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -833,17 +1323,20 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_LBUTTONUP => {
             let dpi = GetDpiForWindow(hwnd).max(96) as i32;
             let y = (lp.0 >> 16) as i16 as i32 * 96 / dpi;
-            if y >= HEIGHT && change(|bar| {
-                let visible_rows = bar.visible_rows();
-                let first = bar.selected / visible_rows * visible_rows;
-                let index = first + ((y - HEIGHT) / ROW_HEIGHT) as usize;
-                if bar.finder && index < bar.choices.len() {
-                    bar.selected = index;
-                    true
-                } else {
-                    false
-                }
-            }).unwrap_or(false) {
+            if y >= HEIGHT
+                && change(|bar| {
+                    let visible_rows = bar.visible_rows();
+                    let first = bar.selected / visible_rows * visible_rows;
+                    let index = first + ((y - HEIGHT) / ROW_HEIGHT) as usize;
+                    if bar.finder && index < bar.choices.len() {
+                        bar.selected = index;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false)
+            {
                 execute();
             }
             LRESULT(0)
@@ -881,6 +1374,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(GetStockObject(DC_BRUSH).0 as isize)
         }
         WM_COMMAND => {
+            if wp.0 & 0xffff == 4 {
+                show_actions();
+                return LRESULT(0);
+            }
             let id = wp.0 & 0xffff;
             let code = (wp.0 >> 16) & 0xffff;
             if id == 1 && code == EN_CHANGE as usize {
@@ -919,23 +1416,35 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         ));
                     }
                 }
-                rows.extend(packet.results.into_iter().filter(|result| {
-                    !project_paths.contains(&result.path.to_lowercase())
-                }).map(|result| {
-                    let parent = Path::new(&result.path).parent()
-                        .map(|path| path.display().to_string()).unwrap_or_default();
-                    let kind = if result.folder {
-                        "Folder".to_owned()
-                    } else {
-                        Path::new(&result.path).extension().and_then(|value| value.to_str())
-                            .filter(|value| !value.is_empty())
-                            .map(|value| format!("{} file", value.to_ascii_uppercase()))
-                            .unwrap_or_else(|| "File".into())
-                    };
-                    let label = format!("{}  ·  {kind}  ·  {parent}", result.name);
-                    let action = if result.folder { Action::Open(result.path) } else { Action::OpenFile(result.path) };
-                    (label, action)
-                }));
+                rows.extend(
+                    packet
+                        .results
+                        .into_iter()
+                        .filter(|result| !project_paths.contains(&result.path.to_lowercase()))
+                        .map(|result| {
+                            let parent = Path::new(&result.path)
+                                .parent()
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_default();
+                            let kind = if result.folder {
+                                "Folder".to_owned()
+                            } else {
+                                Path::new(&result.path)
+                                    .extension()
+                                    .and_then(|value| value.to_str())
+                                    .filter(|value| !value.is_empty())
+                                    .map(|value| format!("{} file", value.to_ascii_uppercase()))
+                                    .unwrap_or_else(|| "File".into())
+                            };
+                            let label = format!("{}  ·  {kind}  ·  {parent}", result.name);
+                            let action = if result.folder {
+                                Action::Open(result.path)
+                            } else {
+                                Action::OpenFile(result.path)
+                            };
+                            (label, action)
+                        }),
+                );
                 let empty = rows.is_empty();
                 choices(rows);
                 if packet.limited {
@@ -1030,13 +1539,14 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 None,
             )
         };
-        let (Ok(edit), Ok(status)) = (
+        let (Ok(edit), Ok(status), Ok(actions)) = (
             create(w!("EDIT"), WINDOW_STYLE(ES_AUTOHSCROLL as u32), 1),
             create(
                 w!("STATIC"),
                 WINDOW_STYLE(SS_ENDELLIPSIS.0 | SS_NOPREFIX.0),
                 3,
             ),
+            create(w!("BUTTON"), WINDOW_STYLE(BS_OWNERDRAW as u32), 4),
         ) else {
             let _ = DestroyWindow(hwnd);
             return;
@@ -1061,6 +1571,7 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 hwnd,
                 edit,
                 status,
+                actions,
                 click_hook: None,
                 old_edit,
                 choices: vec![],
@@ -1075,6 +1586,8 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 menu_theme: None,
             })
         });
+        let _ = SetWindowTextW(actions, w!("Actions"));
+        let _ = SetWindowSubclass(actions, Some(actions_proc), 1, 0);
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);
     }
     let Some((hwnd, edit)) = get(|b| (b.hwnd, b.edit)) else {
@@ -1130,5 +1643,136 @@ unsafe fn position(hwnd: HWND, pet: HWND, width: i32, height: i32) {
         height,
         SWP_NOACTIVATE,
     );
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn render_toolbar_palettes_and_scaled_results_without_desktop_input() {
+        unsafe {
+            let width = 2280i32;
+            let height = 930i32;
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: 40,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap =
+                CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let old = SelectObject(dc, bitmap.into());
+            let mut x = 0;
+            for dpi in [96, 144, 192] {
+                let s = |value: i32| value * dpi as i32 / 96;
+                let font = CreateFontW(
+                    -s(14),
+                    0,
+                    0,
+                    0,
+                    400,
+                    0,
+                    0,
+                    0,
+                    DEFAULT_CHARSET,
+                    OUT_DEFAULT_PRECIS,
+                    CLIP_DEFAULT_PRECIS,
+                    DEFAULT_QUALITY,
+                    DEFAULT_PITCH.0 as u32,
+                    w!("Segoe UI"),
+                );
+                for (row, pet) in [
+                    crate::pet_art::Appearance::Calico,
+                    crate::pet_art::Appearance::Dog,
+                    crate::pet_art::Appearance::Panda,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let palette = pet.palette();
+                    let _ = SetViewportOrgEx(dc, x, row as i32 * 310, None);
+                    let rows = vec![
+                        (
+                            "Project notes.pdf  ·  PDF file  ·  C:\\Projects\\Study".into(),
+                            Action::OpenFile("notes.pdf".into()),
+                        ),
+                        (
+                            "Algorithms  ·  Project  ·  C:\\Projects\\Algorithms".into(),
+                            Action::Open("C:\\Projects\\Algorithms".into()),
+                        ),
+                    ];
+                    render_bar(
+                        dc,
+                        RECT {
+                            left: 0,
+                            top: 0,
+                            right: s(WIDTH),
+                            bottom: s(HEIGHT + ROW_HEIGHT * 2 + 8),
+                        },
+                        dpi,
+                        palette,
+                        font,
+                        &rows,
+                        0,
+                        5,
+                        true,
+                    );
+                    let previous_font = SelectObject(dc, font.into());
+                    let mut input = RECT {
+                        left: s(16),
+                        top: s(18),
+                        right: s(WIDTH - 106),
+                        bottom: s(42),
+                    };
+                    let mut text: Vec<_> = "notes".encode_utf16().collect();
+                    SetTextColor(dc, palette.ink);
+                    DrawTextW(dc, &mut text, &mut input, DT_SINGLELINE | DT_NOPREFIX);
+                    SelectObject(dc, previous_font);
+                    draw_actions(
+                        dc,
+                        RECT {
+                            left: s(WIDTH - 92),
+                            top: s(10),
+                            right: s(WIDTH - 12),
+                            bottom: s(46),
+                        },
+                        ODS_FLAGS(0),
+                        palette,
+                        dpi,
+                        font,
+                    );
+                }
+                let _ = DeleteObject(font.into());
+                x += s(WIDTH) + 10;
+            }
+            if let Some(path) = std::env::var_os("BUDDY_TOOLBAR_PREVIEW") {
+                let bytes =
+                    std::slice::from_raw_parts(bits as *const u8, (width * height * 4) as usize);
+                let mut bmp = Vec::new();
+                bmp.extend_from_slice(b"BM");
+                bmp.extend_from_slice(&((54 + bytes.len()) as u32).to_le_bytes());
+                bmp.extend_from_slice(&[0; 4]);
+                bmp.extend_from_slice(&54u32.to_le_bytes());
+                bmp.extend_from_slice(&40u32.to_le_bytes());
+                bmp.extend_from_slice(&width.to_le_bytes());
+                bmp.extend_from_slice(&(-height).to_le_bytes());
+                bmp.extend_from_slice(&1u16.to_le_bytes());
+                bmp.extend_from_slice(&32u16.to_le_bytes());
+                bmp.extend_from_slice(&[0; 24]);
+                bmp.extend_from_slice(bytes);
+                std::fs::write(path, bmp).unwrap();
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+        }
+    }
 }

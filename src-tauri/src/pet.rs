@@ -3,7 +3,7 @@ use super::*;
 use crate::pet_art::{self, AnimationPhase, AnimationSet, Appearance, Cue};
 use std::{
     cell::RefCell,
-    sync::atomic::{AtomicBool, AtomicIsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     time::Instant,
 };
 use windows::{
@@ -34,6 +34,7 @@ const REFRESH_INDICATORS: u32 = WM_APP + 20;
 const PLAY_CUE: u32 = WM_APP + 21;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
+const NOTICE_TIMER: usize = 4;
 pub const APPEARANCES: [Appearance; 3] = [Appearance::Calico, Appearance::Dog, Appearance::Panda];
 const HOLD_SECS: u64 = 120;
 const WIDTH: i32 = 128;
@@ -51,8 +52,22 @@ pub struct Control {
     hwnd: AtomicIsize,
     stopping: AtomicBool,
     status: Mutex<Status>,
-    pending: Mutex<Option<Vec<PathBuf>>>,
+    pending: Mutex<Option<(u64, Result<Vec<PathBuf>, String>)>>,
+    import_generation: AtomicU64,
+    active_import: AtomicU64,
+    importing: AtomicBool,
     copy_reply: Mutex<Option<std::sync::mpsc::SyncSender<Result<(), String>>>>,
+}
+impl Control {
+    fn queue_import_result(&self, generation: u64, result: Result<Vec<PathBuf>, String>) -> bool {
+        let Ok(mut pending) = self.pending.lock() else { return false; };
+        if self.stopping.load(Ordering::Relaxed)
+            || self.import_generation.load(Ordering::SeqCst) != generation {
+            return false;
+        }
+        *pending = Some((generation, result));
+        true
+    }
 }
 struct State {
     app: tauri::AppHandle,
@@ -66,6 +81,7 @@ struct State {
     motion_set: usize,
     motion: Option<(AnimationPhase, usize, bool)>,
     motion_deadline: Option<Instant>,
+    drop_notice: Option<Instant>,
 }
 thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 fn wide(s: &str) -> Vec<u16> {
@@ -73,6 +89,10 @@ fn wide(s: &str) -> Vec<u16> {
 }
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
     STATE.with(|s| s.borrow_mut().as_mut().map(f))
+}
+pub(crate) unsafe fn held_paths() -> Vec<PathBuf> {
+    if let Some(hwnd) = with_state(|state| HWND(state.control.hwnd.load(Ordering::Relaxed) as _)) { expire(hwnd); }
+    with_state(|state| state.files.clone()).unwrap_or_default()
 }
 pub fn appearance() -> Appearance {
     with_state(|state| state.appearance).unwrap_or_default()
@@ -88,6 +108,7 @@ pub fn set_appearance(app: &tauri::AppHandle, appearance: Appearance) {
         }
     }
 }
+pub fn reset(app: &tauri::AppHandle) -> Result<(), String> { message(app, RESET) }
 pub fn preview(app: &tauri::AppHandle, index: usize) {
     if let Some(control) = app.try_state::<Arc<Control>>() {
         let hwnd = HWND(control.hwnd.load(Ordering::Relaxed) as _);
@@ -161,6 +182,8 @@ fn publish(state: &State) {
     }
 }
 unsafe fn hold(hwnd: HWND, state: &mut State, files: Vec<PathBuf>) {
+    state.drop_notice = None;
+    let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
     state.files = files;
     state.deadline = Some(Instant::now() + Duration::from_secs(HOLD_SECS));
     SetTimer(Some(hwnd), 1, 1000, None);
@@ -226,14 +249,14 @@ fn format() -> FORMATETC {
         ..Default::default()
     }
 }
-fn validated(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+pub(super) fn validated(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
     if paths.is_empty() || paths.len() > 20 {
         return Err("Drop 1–20 local files or folders at a time.".into());
     }
     let mut total = 0;
     let mut out = Vec::new();
     for path in paths {
-        // Avoid network shares, virtual attachments, and unbounded metadata work.
+        // Incoming virtual files are materialized locally before reaching this check.
         let local = matches!(path.components().next(),Some(std::path::Component::Prefix(p)) if matches!(p.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)));
         total += path.as_os_str().len();
         if !local || !path.exists() || total > 65536 {
@@ -294,11 +317,11 @@ impl IDropTarget_Impl for Target_Impl {
         unsafe {
             let okay = data
                 .as_ref()
-                .is_some_and(|d| d.QueryGetData(&format()).is_ok())
-                && (*effect & DROPEFFECT_COPY) != DROPEFFECT_NONE;
+                .is_some_and(|d| d.QueryGetData(&format()).is_ok() || crate::drop_data::supported(d))
+                && incoming_effect(*effect) != DROPEFFECT_NONE;
             self.supported.store(okay, Ordering::Relaxed);
             *effect = if okay {
-                DROPEFFECT_COPY
+                incoming_effect(*effect)
             } else {
                 DROPEFFECT_NONE
             };
@@ -315,9 +338,9 @@ impl IDropTarget_Impl for Target_Impl {
     ) -> windows::core::Result<()> {
         unsafe {
             *effect = if self.supported.load(Ordering::Relaxed)
-                && (*effect & DROPEFFECT_COPY) != DROPEFFECT_NONE
+                && incoming_effect(*effect) != DROPEFFECT_NONE
             {
-                DROPEFFECT_COPY
+                incoming_effect(*effect)
             } else {
                 DROPEFFECT_NONE
             };
@@ -340,26 +363,38 @@ impl IDropTarget_Impl for Target_Impl {
     ) -> windows::core::Result<()> {
         unsafe {
             let hwnd = HWND(self.hwnd as _);
-            let allowed = (*effect & DROPEFFECT_COPY) != DROPEFFECT_NONE;
+            let accepted = incoming_effect(*effect);
             *effect = DROPEFFECT_NONE;
-            let result = if allowed {
+            let result = if accepted != DROPEFFECT_NONE {
                 data.as_ref()
                     .ok_or("No file data.".into())
-                    .and_then(|d| paths(d))
+                    .and_then(|d| paths(d).map(crate::drop_data::DropData::Paths).or_else(|_| crate::drop_data::read(d)))
             } else {
-                Err("Source did not allow copying.".into())
+                Err("The source did not allow copying or linking.".into())
             };
+            let result = result.and_then(|data| match data {
+                crate::drop_data::DropData::Paths(files) => validated(files).map(Some),
+                data => start_import(data).map(|_| None),
+            });
             with_state(|s| {
                 s.hover = false;
                 match result {
-                    Ok(files) => {
+                    Ok(Some(files)) => {
+                        s.control.import_generation.fetch_add(1, Ordering::SeqCst);
                         hold(hwnd, s, files);
-                        *effect = DROPEFFECT_COPY;
+                        *effect = accepted;
+                    }
+                    Ok(None) => {
+                        s.drop_notice = None;
+                        let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
+                        *effect = accepted;
                     }
                     Err(message) => {
                         if let Ok(mut v) = s.control.status.lock() {
                             v.message = message;
                         }
+                        s.drop_notice = Some(Instant::now() + Duration::from_secs(8));
+                        let _ = SetTimer(Some(hwnd), NOTICE_TIMER, 1000, None);
                     }
                 }
                 publish(s);
@@ -368,6 +403,41 @@ impl IDropTarget_Impl for Target_Impl {
             Ok(())
         }
     }
+}
+
+fn incoming_effect(offered: DROPEFFECT) -> DROPEFFECT {
+    if offered & DROPEFFECT_COPY != DROPEFFECT_NONE { DROPEFFECT_COPY }
+    else if offered & DROPEFFECT_LINK != DROPEFFECT_NONE { DROPEFFECT_LINK }
+    else { DROPEFFECT_NONE }
+}
+
+fn start_import(data: crate::drop_data::DropData) -> Result<(), String> {
+    let (control, root) = with_state(|state| {
+        let core = state.app.state::<Shared>();
+        (state.control.clone(), core.data_path.join("drag-cache"))
+    }).ok_or("Pet is unavailable.")?;
+    if control.importing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("An attachment import is still finishing. Try again shortly.".into());
+    }
+    let generation = control.import_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    control.active_import.store(generation, Ordering::SeqCst);
+    if let Ok(mut status) = control.status.lock() {
+        status.message = "Importing attachment…".into();
+    }
+    let import_control = control.clone();
+    let worker = std::thread::Builder::new().name("buddy-file-import".into()).spawn(move || {
+        let result = crate::drop_data::materialize(data, &root).and_then(validated);
+        import_control.importing.store(false, Ordering::SeqCst);
+        if import_control.queue_import_result(generation, result) {
+            let hwnd = HWND(import_control.hwnd.load(Ordering::Relaxed) as _);
+            unsafe { let _ = PostMessageW(Some(hwnd), HOLD, WPARAM(0), LPARAM(0)); }
+        }
+    });
+    if worker.is_err() {
+        control.importing.store(false, Ordering::SeqCst);
+        return Err("Could not start the attachment import. Try again shortly.".into());
+    }
+    Ok(())
 }
 #[implement(IDropSource)]
 struct Source {
@@ -677,6 +747,7 @@ fn timer_bounds(has_files: bool) -> RECT {
 }
 
 const PAW_BOUNDS: RECT = RECT { left: 3, top: 3, right: 47, bottom: 31 };
+const NOTICE_BOUNDS: RECT = RECT { left: 9, top: 91, right: 119, bottom: 109 };
 
 unsafe fn paw_badge(dc: HDC, due: bool, palette: pet_art::Palette) {
     let surface = CreateSolidBrush(if due { palette.accent } else { palette.surface });
@@ -696,82 +767,20 @@ unsafe fn paw_badge(dc: HDC, due: bool, palette: pet_art::Palette) {
     let _ = DeleteObject(pads.into());
 }
 
-unsafe fn show_todos(app: &tauri::AppHandle, hwnd: HWND) {
-    const LIMIT: usize = 8;
-    let todos = app.try_state::<Shared>()
-        .and_then(|core| core.db.lock().ok().and_then(|db| rows(&db).ok()))
-        .map(|items| items.into_iter().filter(|item| item.kind == "todo" && !item.done).collect::<Vec<_>>());
-    let Ok(menu) = CreatePopupMenu() else {
-        return;
-    };
-    let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("To-dos · choose an action"));
-    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-    let mut actions = Vec::new();
-    match todos {
-        None => { let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("Could not load to-dos")); }
-        Some(todos) if todos.is_empty() => {
-            let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, w!("No open to-dos"));
-        }
-        Some(todos) => {
-            for item in todos.iter().take(LIMIT) {
-                let title = item.title.split_whitespace().collect::<Vec<_>>().join(" ");
-                let mut chars = title.chars();
-                let mut title: String = chars.by_ref().take(56).collect();
-                if chars.next().is_some() {
-                    title.push('…');
-                }
-                let title = title.replace('&', "&&");
-                let label: Vec<_> = title.encode_utf16().chain(Some(0)).collect();
-                if let Ok(submenu) = CreatePopupMenu() {
-                    let command = actions.len() + 100;
-                    if AppendMenuW(submenu, MF_STRING, command, w!("Mark complete")).is_ok()
-                        && AppendMenuW(menu, MF_POPUP, submenu.0 as usize, PCWSTR(label.as_ptr())).is_ok() {
-                        actions.push(item.id.clone());
-                    } else {
-                        let _ = DestroyMenu(submenu);
-                    }
-                }
-            }
-            if todos.len() > LIMIT {
-                let label: Vec<_> = format!("{} more in Tasks", todos.len() - LIMIT).encode_utf16().chain(Some(0)).collect();
-                let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, PCWSTR(label.as_ptr()));
-            }
-        }
-    }
-    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-    let _ = AppendMenuW(menu, MF_STRING, 2, w!("Open tools"));
-    let _ = AppendMenuW(menu, MF_STRING, 1, w!("Close"));
-    let mut rect = RECT::default();
-    let _ = GetWindowRect(hwnd, &mut rect);
-    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+unsafe fn show_todos(app: &tauri::AppHandle, _hwnd: HWND) {
     crate::bar::dismiss();
-    let action = crate::menu_theme::track(menu, hwnd,
-        rect.left + PAW_BOUNDS.left * dpi / 96, rect.top + PAW_BOUNDS.bottom * dpi / 96,
-        appearance().palette()) as usize;
-    if action == 2 {
-        post_main(app, false);
-    } else if let Some(id) = action.checked_sub(100).and_then(|index| actions.get(index)) {
-        finish_todo(app, id);
-    }
+    crate::navigation::todo(app.clone(), appearance().palette());
 }
 
-fn finish_todo(app: &tauri::AppHandle, id: &str) {
-    if let Some(core) = app.try_state::<Shared>() {
-        let result = core.db.lock().map_err(err).and_then(|db| complete_todo(&db, id));
-        match result {
-            Ok(true) => {
-                changed(app, &core);
-                cue(app, Cue::TodoDone);
-            }
-            Ok(false) => {}
-            Err(error) => {
-                if let Ok(mut warning) = core.warning.lock() {
-                    *warning = Some(format!("Could not complete to-do: {error}"));
-                }
-                let _ = app.emit("data-changed", ());
-                post_main(app, false);
-            }
-        }
+unsafe fn show_drop_notice(hwnd: HWND, message: &str) {
+    if let Ok(menu) = CreatePopupMenu() {
+        let text = wide(message);
+        let _ = AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, PCWSTR(text.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, 1, w!("Close"));
+        let mut rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rect);
+        crate::bar::dismiss();
+        let _ = crate::menu_theme::track(menu, hwnd, rect.left, rect.bottom, appearance().palette());
     }
 }
 unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: COLORREF) {
@@ -812,7 +821,7 @@ unsafe fn paint(hwnd: HWND) {
         bg,
     );
     let _ = DeleteObject(bg.into());
-    let (count, left, hover, appearance, pose, file_motion, timer, paw, awake, cue) = with_state(|state| {
+    let (count, left, hover, appearance, pose, file_motion, timer, paw, awake, cue, notice) = with_state(|state| {
         let count = state.files.len();
         let (pose, file_motion) = match state.motion {
             Some((phase, index, _)) => (
@@ -838,14 +847,19 @@ unsafe fn paint(hwnd: HWND) {
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
         let paw = state.indicators.shows_paw().then_some((
             matches!(state.indicators.reminder, Some(ReminderMark::Due)), state.indicators.todo_count));
-        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, paw, awake, cue)
+        let importing = state.control.importing.load(Ordering::SeqCst)
+            && state.control.active_import.load(Ordering::SeqCst) == state.control.import_generation.load(Ordering::SeqCst);
+        let notice = if importing { Some("Importing…") }
+            else if state.drop_notice.is_some_and(|until| until > Instant::now()) { Some("Drop failed · click") }
+            else { None };
+        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, paw, awake, cue, notice)
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
     SetMapMode(dc, MM_TEXT);
     pet_art::draw_pose(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_motion, awake, cue);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
-    let font = if count > 0 || timer.is_some() || paw.is_some() {
+    let font = if count > 0 || timer.is_some() || paw.is_some() || notice.is_some() {
         CreateFontW(-13, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"))
     } else {
@@ -858,6 +872,9 @@ unsafe fn paint(hwnd: HWND) {
             let label = if pending > 9 { "9+".into() } else { pending.to_string() };
             badge(dc, RECT { left: 27, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
         }
+    }
+    if let Some(label) = notice {
+        badge(dc, NOTICE_BOUNDS, label, palette.surface, palette.accent);
     }
     if count > 0 {
         let compact = timer.is_some();
@@ -931,11 +948,29 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             expire(hwnd);
             LRESULT(0)
         }
+        WM_TIMER if wp.0 == NOTICE_TIMER => {
+            with_state(|state| {
+                if state.drop_notice.is_none_or(|until| until <= Instant::now()) {
+                    state.drop_notice = None;
+                    let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
+                }
+            });
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
         HOLD => {
             with_state(|s| {
-                let files = s.control.pending.lock().ok().and_then(|mut p| p.take());
-                if let Some(files) = files {
-                    hold(hwnd, s, files);
+                let pending = s.control.pending.lock().ok().and_then(|mut p| p.take());
+                if let Some((generation, result)) = pending {
+                    if generation != s.control.import_generation.load(Ordering::SeqCst) { return; }
+                    match result {
+                        Ok(files) => hold(hwnd, s, files),
+                        Err(message) => {
+                            if let Ok(mut status) = s.control.status.lock() { status.message = message; }
+                            s.drop_notice = Some(Instant::now() + Duration::from_secs(8));
+                            let _ = SetTimer(Some(hwnd), NOTICE_TIMER, 1000, None);
+                        }
+                    }
                 }
             });
             let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1094,6 +1129,16 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
                     let x = lp.0 as i16 as i32 * 96 / dpi;
                     let y = (lp.0 >> 16) as i16 as i32 * 96 / dpi;
+                    if let Some(Some(message)) = with_state(|s| {
+                        let r = NOTICE_BOUNDS;
+                        if s.drop_notice.is_some_and(|until| until > Instant::now())
+                            && x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                            s.control.status.lock().ok().map(|status| status.message.clone())
+                        } else { None }
+                    }) {
+                        show_drop_notice(hwnd, &message);
+                        return LRESULT(0);
+                    }
                     if let Some((app, timer, paw)) = with_state(|s| {
                         let r = timer_bounds(!s.files.is_empty());
                         let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
@@ -1124,24 +1169,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let _ = GetCursorPos(&mut p);
             if let Ok(menu) = CreatePopupMenu() {
                 let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools"));
-                let _ = AppendMenuW(menu, MF_STRING, 10, w!("Toggle toolbar (Ctrl+Alt+P)"));
-                let _ = AppendMenuW(menu, MF_STRING, 8, w!("Show open to-dos"));
-                let _ = AppendMenuW(menu, MF_STRING, 9, w!("Show pet"));
-                let _ = AppendMenuW(
-                    menu,
-                    MF_STRING | MF_DISABLED,
-                    0,
-                    w!("Drop files; drag pouch to copy; Alt-drag to move"),
-                );
-                let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
-                let _ = AppendMenuW(menu, MF_STRING, 6, w!("Copy held files (then paste)"));
-                let timer = with_state(|s| s.indicators.visible_timer().map(|timer| (timer.id.clone(), timer.action()))).flatten();
-                if let Some((_, action)) = &timer {
-                    let label = if *action == "pause" { w!("Pause timer") } else { w!("Resume timer") };
-                    let _ = AppendMenuW(menu, MF_STRING, 7, label);
-                }
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
-                let _ = AppendMenuW(menu, MF_STRING, 4, w!("Reset position"));
+                let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
                 if let Ok(pets) = CreatePopupMenu() {
                     for (index, (pet, label)) in [
                         (Appearance::Calico, w!("Calico")),
@@ -1155,54 +1184,20 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         let _ = DestroyMenu(pets);
                     }
                 }
-                if let Ok(motion) = CreatePopupMenu() {
-                    for index in 0..5 {
-                        let label = wide(&format!("Set {}", index + 1));
-                        let _ = AppendMenuW(motion, MF_STRING, 30 + index, PCWSTR(label.as_ptr()));
-                    }
-                    if AppendMenuW(menu, MF_POPUP, motion.0 as usize, w!("Try motion set")).is_err() {
-                        let _ = DestroyMenu(motion);
-                    }
-                }
-                let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit (reminders stop)"));
+                let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit"));
                 let action = crate::menu_theme::track(menu, hwnd, p.x, p.y, appearance().palette());
                 match action {
-                    9 => {
-                        let _ = PostMessageW(Some(hwnd), SHOW, WPARAM(0), LPARAM(0));
-                    }
-                    10 => {
-                        if let Some(app) = with_state(|s| s.app.clone()) {
-                            crate::bar::toggle(&app, hwnd);
-                        }
-                    }
                     20..=22 => {
                         if let Some(app) = with_state(|s| s.app.clone()) {
                             set_appearance(&app, [Appearance::Calico, Appearance::Dog, Appearance::Panda][action as usize - 20]);
                         }
-                    }
-                    30..=34 => {
-                        if let Some(app) = with_state(|s| s.app.clone()) {
-                            preview(&app, action as usize - 30);
-                        }
-                    }
-                    8 => {
-                        if let Some(app) = with_state(|s| s.app.clone()) {
-                            show_todos(&app, hwnd);
-                        }
-                    }
-                    7 => {
-                        if let (Some(app), Some(timer)) = (with_state(|s| s.app.clone()), timer) {
-                            change_pet_timer(app, timer);
-                        }
-                    }
-                    6 => {
-                        let _ = copy_held(hwnd);
                     }
                     1 => {
                         with_state(|s| post_main(&s.app, false));
                     }
                     2 => {
                         with_state(|s| {
+                            s.control.import_generation.fetch_add(1, Ordering::SeqCst);
                             s.files.clear();
                             s.deadline = None;
                             advance_motion(hwnd, s, None);
@@ -1213,9 +1208,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                     3 => {
                         let _ = PostMessageW(Some(hwnd), HIDE, WPARAM(0), LPARAM(0));
-                    }
-                    4 => {
-                        let _ = PostMessageW(Some(hwnd), RESET, WPARAM(0), LPARAM(0));
                     }
                     5 => {
                         with_state(|s| post_main(&s.app, true));
@@ -1249,6 +1241,9 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
         stopping: AtomicBool::new(false),
         status: Mutex::new(Status::default()),
         pending: Mutex::new(None),
+        import_generation: AtomicU64::new(0),
+        active_import: AtomicU64::new(0),
+        importing: AtomicBool::new(false),
         copy_reply: Mutex::new(None),
     });
     let output = control.clone();
@@ -1288,6 +1283,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                     motion_set: motion_setting(&app, appearance),
                     motion: None,
                     motion_deadline: None,
+                    drop_notice: None,
                 })
             });
             let hwnd = CreateWindowExW(
@@ -1431,7 +1427,10 @@ pub fn pet_hold(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
     let c = app
         .try_state::<Arc<Control>>()
         .ok_or("Pet is unavailable")?;
-    *c.pending.lock().map_err(err)? = Some(files);
+    let mut pending = c.pending.lock().map_err(err)?;
+    let generation = c.import_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    *pending = Some((generation, Ok(files)));
+    drop(pending);
     message(&app, HOLD)
 }
 #[tauri::command]
@@ -1481,6 +1480,50 @@ pub fn stop(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_imports_cannot_replace_a_newer_hold_or_reopen_a_cleared_batch() {
+        let control = Control {
+            hwnd: AtomicIsize::new(0),
+            stopping: AtomicBool::new(false),
+            status: Mutex::new(Status::default()),
+            pending: Mutex::new(None),
+            import_generation: AtomicU64::new(1),
+            active_import: AtomicU64::new(0),
+            importing: AtomicBool::new(false),
+            copy_reply: Mutex::new(None),
+        };
+        control.import_generation.store(2, Ordering::SeqCst);
+        assert!(control.queue_import_result(2, Ok(vec![PathBuf::from("latest")])));
+        assert!(!control.queue_import_result(1, Ok(vec![PathBuf::from("old")])));
+        let (_, result) = control.pending.lock().unwrap().take().unwrap();
+        assert_eq!(result.unwrap(), vec![PathBuf::from("latest")]);
+        control.import_generation.store(3, Ordering::SeqCst);
+        assert!(!control.queue_import_result(2, Err("late error".into())));
+        assert!(control.pending.lock().unwrap().is_none());
+        assert_eq!(incoming_effect(DROPEFFECT_COPY | DROPEFFECT_MOVE), DROPEFFECT_COPY);
+        assert_eq!(incoming_effect(DROPEFFECT_LINK), DROPEFFECT_LINK);
+        assert_eq!(incoming_effect(DROPEFFECT_MOVE), DROPEFFECT_NONE);
+    }
+
+    #[test]
+    fn imported_attachments_roundtrip_through_the_existing_copy_handoff() {
+        unsafe {
+            OleInitialize(None).unwrap();
+            let root = std::env::temp_dir().join(format!("buddy-import-copy-{}", super::super::new_id()));
+            let files = crate::drop_data::materialize(crate::drop_data::DropData::Files(vec![
+                ("猫.txt".into(), b"attachment one".to_vec()),
+                ("menu.pdf".into(), b"attachment two".to_vec()),
+            ]), &root).unwrap();
+            let data = shell_data(files.clone()).unwrap();
+            prefer_copy(&data).unwrap();
+            assert_eq!(paths(&data).unwrap(), files);
+            assert_eq!(std::fs::read(&files[0]).unwrap(), b"attachment one");
+            assert_eq!(std::fs::read(&files[1]).unwrap(), b"attachment two");
+            drop(data);
+            std::fs::remove_dir_all(root).unwrap();
+            OleUninitialize();
+        }
+    }
     #[test]
     fn task_reactions_cannot_interrupt_file_motion_or_preview() {
         assert!(can_play_cue(None));
@@ -1546,6 +1589,9 @@ mod tests {
                 stopping: AtomicBool::new(false),
                 status: Mutex::new(Status::default()),
                 pending: Mutex::new(None),
+                import_generation: AtomicU64::new(0),
+                active_import: AtomicU64::new(0),
+                importing: AtomicBool::new(false),
                 copy_reply: Mutex::new(None),
             });
             let source: IDropSource = Source {

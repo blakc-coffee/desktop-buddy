@@ -79,6 +79,12 @@ components:
 
 # Design System: Desktop Buddy
 
+## Native toolbar and compact Todo
+
+The native command bar uses Segoe UI at 14 DIP, a 56 DIP input row, 48 DIP results, a reserved Actions text button, and the selected pet's semantic palette. It opens blank; suggestions appear only while browsing. Native result icons use a consistent drawn outline. Actions groups detailed tools rather than exposing a long flat menu. The pet context menu has five entries.
+
+The compact Todo window uses the same pet palette, a 24px Todo heading, a single add row and divider-separated editable checklist rows. It remains a desktop surface with 300px minimum width. Detailed management keeps the established warm charcoal design below.
+
 ## Overview
 
 The existing warm-charcoal utility reference is the visual authority. The panel is restrained, task-first and readable: system typography, flat tonal surfaces, divider-led lists and one mint accent. Light mode retains the component structure with its own semantic palette; system mode follows the OS color preference.

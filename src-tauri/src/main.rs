@@ -2,8 +2,12 @@
 mod agents;
 mod bar;
 mod commands;
+mod drop_data;
 mod finder;
 mod model;
+mod navigation;
+mod browser_protocol;
+mod browser_fill;
 mod menu_theme;
 mod pet;
 mod pet_art;
@@ -188,6 +192,22 @@ fn toggle_item(
     Ok(())
 }
 
+#[tauri::command]
+fn rename_todo(app: tauri::AppHandle, core: tauri::State<Shared>, id: String, title: String) -> Result<(), String> {
+    let db = core.db.lock().map_err(err)?;
+    rename_todo_item(&db, &id, &title)?;
+    drop(db);
+    changed(&app, &core);
+    Ok(())
+}
+fn rename_todo_item(db: &Connection, id: &str, title: &str) -> Result<(), String> {
+    let mut item = get(db, id)?;
+    if item.kind != "todo" { return Err("This item is no longer a todo.".into()); }
+    item.title = title.trim().into();
+    validate(&item)?;
+    put(db, &item)
+}
+#[cfg(test)]
 fn complete_todo(db: &Connection, id: &str) -> Result<bool, String> {
     let mut item = get(db, id)?;
     if item.kind != "todo" {
@@ -720,6 +740,8 @@ fn initialize(path: &Path) -> Result<Connection, String> {
 }
 fn main() {
     tauri::Builder::default()
+        .manage(navigation::Navigation::default())
+        .manage(Arc::new(browser_fill::BrowserState::default()))
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|a| a == "--quit") {
                 request_quit(app)
@@ -753,9 +775,18 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            browser_fill::browser_helper_files,
+            browser_fill::browser_connections,
+            browser_fill::browser_capture,
+            browser_fill::browser_generate,
+            browser_fill::browser_apply,
+            browser_fill::browser_cancel,
+            navigation::panel_navigation,
+            navigation::acknowledge_navigation,
             save_item,
             remove_item,
             toggle_item,
+            rename_todo,
             start_timer,
             timer_action,
             set_theme,
@@ -933,6 +964,9 @@ mod storage_tests {
         };
         put(&db, &item).unwrap();
         assert!(complete_todo(&db, &item.id).unwrap());
+        rename_todo_item(&db, &item.id, "Renamed while checked").unwrap();
+        assert!(get(&db, &item.id).unwrap().done);
+        rename_todo_item(&db, &item.id, &item.title).unwrap();
         assert!(!complete_todo(&db, &item.id).unwrap());
         let completed = get(&db, &item.id).unwrap();
         assert!(completed.done);

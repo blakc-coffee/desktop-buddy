@@ -19,7 +19,7 @@ export default function ProjectResume({
   return (
     <section aria-label="Resume a project">
       <div className="section-heading">
-        <h2>Pick up a project</h2>
+        <h2 id="project-resume-heading" tabIndex={-1}>Pick up a project</h2>
       </div>
       {project ? (
         <>
