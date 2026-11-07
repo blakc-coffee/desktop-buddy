@@ -3,6 +3,7 @@
 
 pub enum Destination {
     Activity,
+    Codex,
     Fill,
     Ask,
     Resume,
@@ -132,7 +133,7 @@ pub fn parse(text: &str) -> Result<Command, String> {
         "/tools" | "/actions" if args.is_empty() => Ok(Command::Tools),
 
         "/fill" if args.is_empty() => Ok(Command::Panel(Destination::Fill)),
-        "/codex" if args.is_empty() => Ok(Command::Panel(Destination::Activity)),
+        "/codex" if args.is_empty() => Ok(Command::Panel(Destination::Codex)),
 
         "/ask" if args.is_empty() => Ok(Command::Panel(Destination::Ask)),
 
@@ -223,7 +224,7 @@ mod tests {
 
         assert!(suggestions("/copy").is_empty());
 
-        assert_eq!(parse("/codex"), Ok(Command::Panel(Destination::Activity)));
+        assert_eq!(parse("/codex"), Ok(Command::Panel(Destination::Codex)));
 
         assert_eq!(suggestions("/too").len(), 0);
 

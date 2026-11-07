@@ -17,11 +17,33 @@ import {
   type Snapshot,
 } from "./domain";
 import { destinationPage, type PanelRequest } from "./panelNavigation";
+import ProjectResume from "./ProjectResume";
+import TaskChecklist from "./TaskChecklist";
+import type { AgentTask } from "./AgentPanel";
+import { pageInfo, type Page } from "./uiNavigation";
 const BrowserFill = lazy(() => import("./BrowserFill"));
 const AgentPanel = lazy(() => import("./AgentPanel"));
-type Page = "Fill" | "Activity" | "Tasks" | "Projects" | "Shelf" | "Music" | "Settings";
+type FormDraft = {
+  title: string;
+  minutes: string;
+  due: string;
+  projectPath: string;
+  note: string;
+  edit: Item | null;
+};
+const blankDraft = (): FormDraft => ({
+  title: "",
+  minutes: "25",
+  due: "",
+  projectPath: "",
+  note: "",
+  edit: null,
+});
+
 const paths: Record<string, string> = {
   Fill: "M4 4h16v16H4zM4 9h16M8 14h8M8 17h5",
+  Codex: "M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16",
+  Cat: "M4 10L3 3l6 4a9 9 0 0 1 6 0l6-4-1 7v5c0 5-16 5-16 0zM8 12h.01M16 12h.01M10 15l2 2 2-2M1 15h5M18 15h5",
   Activity: "M3 12h4l3-8 4 16 3-8h4",
   Tasks: "M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01",
   Projects: "M3 7V5h6l2 2h10v13H3z",
@@ -32,6 +54,7 @@ const paths: Record<string, string> = {
     "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2",
   Search: "M21 21l-5-5M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14",
   Plus: "M12 5v14M5 12h14",
+  Minus: "M5 12h14",
   Arrow: "M7 17L17 7M7 7h10v10",
   Trash: "M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15",
   Pause: "M8 5v14M16 5v14",
@@ -157,12 +180,12 @@ function TimerRow({
 }
 export default function App() {
   const [data, setData] = useState<Snapshot | null>(null),
-    [page, setPage] = useState<Page>("Activity"),
+    [page, setPageState] = useState<Page>("Activity"),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false),
     [capture, setCapture] = useState(""),
-    [tab, setTab] = useState("Todos");
+    [tab, setTabState] = useState("Todos");
   const [title, setTitle] = useState(""),
     [minutes, setMinutes] = useState("25"),
     [due, setDue] = useState(""),
@@ -180,24 +203,98 @@ export default function App() {
       { name: string; path: string; folder: boolean }[]
     >([]),
     [searching, setSearching] = useState(false);
+  const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
+  const [focusTaskId, setFocusTaskId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [projectComposer, setProjectComposer] = useState(false);
+  const [noteComposer, setNoteComposer] = useState(false);
+  const [fillVisited, setFillVisited] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const drafts = useRef<Record<string, FormDraft>>({});
+  const formScope = useRef({
+    page,
+    tab,
+    draft: { title, minutes, due, projectPath, note, edit },
+  });
+  formScope.current = {
+    page,
+    tab,
+    draft: { title, minutes, due, projectPath, note, edit },
+  };
+  function setPage(nextPage: Page, taskTab?: string, focusHeader = true) {
+    const current = formScope.current;
+    const key = (value: Page, tab: string) =>
+      value === "Tasks" ? value + ":" + tab : value;
+    drafts.current[key(current.page, current.tab)] = current.draft;
+    const nextTab = taskTab || current.tab;
+    const nextDraft = drafts.current[key(nextPage, nextTab)] || blankDraft();
+    formScope.current = { page: nextPage, tab: nextTab, draft: nextDraft };
+    setPageState(nextPage);
+    setTabState(nextTab);
+    setTitle(nextDraft.title);
+    setMinutes(nextDraft.minutes);
+    setDue(nextDraft.due);
+    setProjectPath(nextDraft.projectPath);
+    setNote(nextDraft.note);
+    setEdit(nextDraft.edit);
+    setNavigationOpen(false);
+    if (focusHeader)
+      requestAnimationFrame(() =>
+        document.querySelector<HTMLElement>("h1")?.focus(),
+      );
+    if (nextPage === "Fill") setFillVisited(true);
+  }
+  function setTab(nextTab: string) {
+    setPage("Tasks", nextTab, false);
+  }
+  async function saveTodo(command: string, args: Record<string, unknown>) {
+    const blocking = command !== "rename_todo";
+    if (blocking) setBusy(true);
+    try {
+      await action(command, args);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (blocking) setBusy(false);
+    }
+  }
   const [navigation, setNavigation] = useState<PanelRequest | null>(null);
   const latestNavigation = useRef(0);
   function applyNavigation(request: PanelRequest | null) {
     if (!request || request.id <= latestNavigation.current) return;
     latestNavigation.current = request.id;
     setNavigation(request);
-    setPage(destinationPage(request.destination));
-    if (request.destination === "timers") setTab("Timers");
-    if (request.destination === "reminders") setTab("Reminders");
+    setPage(
+      destinationPage(request.destination),
+      request.destination === "timers"
+        ? "Timers"
+        : request.destination === "reminders"
+          ? "Reminders"
+          : undefined,
+      false,
+    );
   }
   function acknowledgeNavigation(id: number) {
-    if (native) void call("acknowledge_navigation", { id }).catch((error) => setError(String(error)));
+    setNavigation((current) => (current?.id === id ? null : current));
+    if (native)
+      void call("acknowledge_navigation", { id }).catch((error) =>
+        setError(String(error)),
+      );
   }
   useEffect(() => {
-    if (!data || !navigation || ["ask", "resume", "activity"].includes(navigation.destination)) return;
-    document.querySelector<HTMLElement>("h1")?.focus();
+    if (
+      !data ||
+      !navigation ||
+      ["ask", "codex"].includes(navigation.destination)
+    )
+      return;
+    (navigation.destination === "resume"
+      ? document.getElementById("project-resume-heading")
+      : document.querySelector<HTMLElement>("h1")
+    )?.focus();
     acknowledgeNavigation(navigation.id);
-  }, [data !== null, navigation]);
+  }, [data !== null, navigation, page]);
   const captureRef = useRef<HTMLInputElement>(null),
     importRef = useRef<HTMLInputElement>(null),
     refreshSeq = useRef(0),
@@ -227,14 +324,25 @@ export default function App() {
       void import("@tauri-apps/api/event").then(async ({ listen }) => {
         const unlisten = await listen("data-changed", onChange);
         const offCodex = await listen("open-codex", () => {
-          if (alive) setPage("Activity");
+          if (alive) setPage("Codex");
         });
-        const offNavigation = await listen<PanelRequest>("panel-navigation", (event) => {
-          if (alive) applyNavigation(event.payload);
-        });
+        const offNavigation = await listen<PanelRequest>(
+          "panel-navigation",
+          (event) => {
+            if (alive) applyNavigation(event.payload);
+          },
+        );
         if (alive) {
-          cleanup = () => { unlisten(); offCodex(); offNavigation(); };
-          void call<PanelRequest | null>("panel_navigation").then((request) => { if (alive) applyNavigation(request); }).catch((error) => setError(String(error)));
+          cleanup = () => {
+            unlisten();
+            offCodex();
+            offNavigation();
+          };
+          void call<PanelRequest | null>("panel_navigation")
+            .then((request) => {
+              if (alive) applyNavigation(request);
+            })
+            .catch((error) => setError(String(error)));
           void refresh();
         } else {
           unlisten();
@@ -272,7 +380,12 @@ export default function App() {
   useEffect(() => {
     if (!data) return;
     document.documentElement.dataset.theme = data.theme;
-  }, [data?.theme]);
+    document.documentElement.dataset.pet = ["calico", "dog", "panda"].includes(
+      data.petAppearance || "",
+    )
+      ? data.petAppearance
+      : "calico";
+  }, [data?.theme, data?.petAppearance]);
   useEffect(() => {
     if (!native) return;
     let active = true;
@@ -349,8 +462,7 @@ export default function App() {
             .toISOString()
             .slice(0, 16),
         );
-        setPage("Tasks");
-        setTab("Reminders");
+        setPage("Tasks", "Reminders");
         setNotice(
           `Review reminder: ${new Date(parsed.dueAt).toLocaleString()}. Save below to confirm.`,
         );
@@ -458,6 +570,9 @@ export default function App() {
   };
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
       <aside className="sidebar">
         <a
           className="brand"
@@ -468,34 +583,58 @@ export default function App() {
           }}
         >
           <span className="brand-mark">
-            <i />
-            <i />
+            <Icon name="Cat" size={24} />
           </span>
           <span>
-            Desktop Buddy<small>Your workspace, within reach.</small>
+            Desktop Buddy<small>Your local desktop companion</small>
           </span>
         </a>
-        <nav aria-label="Main navigation">
-          {(["Activity", "Tasks", "Projects", "Shelf", "Fill", "Music"] as Page[]).map(
-            (p) => (
-              <button
-                key={p}
-                aria-current={page === p ? "page" : undefined}
-                className={page === p ? "nav-item selected" : "nav-item"}
-                onClick={() => {
-                  setPage(p);
-                  clearForm();
-                }}
-              >
-                <Icon name={p} />
-                <span>{p}</span>
-                {p === "Activity" &&
-                  attention.length + (data?.agentAttention || 0) > 0 && (
-                    <b>{attention.length + (data?.agentAttention || 0)}</b>
-                  )}
-              </button>
-            ),
-          )}
+        <button
+          className="navigation-toggle small-button"
+          aria-expanded={navigationOpen}
+          aria-controls="main-navigation"
+          onClick={() => setNavigationOpen(!navigationOpen)}
+        >
+          Tools <Icon name={navigationOpen ? "Minus" : "Plus"} size={16} />
+        </button>
+        <nav
+          id="main-navigation"
+          className={navigationOpen ? "is-open" : ""}
+          aria-label="Main navigation"
+        >
+          {(
+            [
+              "Activity",
+              "Tasks",
+              "Projects",
+              "Shelf",
+              "Codex",
+              "Fill",
+              "Music",
+            ] as Page[]
+          ).map((p) => (
+            <button
+              key={p}
+              aria-current={page === p ? "page" : undefined}
+              className={page === p ? "nav-item selected" : "nav-item"}
+              onClick={() => {
+                setPage(p);
+              }}
+            >
+              <Icon name={p} />
+              <span>{pageInfo[p].title}</span>
+              {p === "Activity" && attention.length > 0 && (
+                <b aria-label={`${attention.length} alerts`}>
+                  {attention.length}
+                </b>
+              )}
+              {p === "Codex" && (data?.agentAttention || 0) > 0 && (
+                <b aria-label={`${data?.agentAttention} need attention`}>
+                  {data?.agentAttention}
+                </b>
+              )}
+            </button>
+          ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="local-indicator">
@@ -504,6 +643,7 @@ export default function App() {
           </div>
           <button
             className={page === "Settings" ? "nav-item selected" : "nav-item"}
+            aria-current={page === "Settings" ? "page" : undefined}
             onClick={() => setPage("Settings")}
           >
             <Icon name="Settings" />
@@ -512,19 +652,19 @@ export default function App() {
           <div className="shortcut-hint">
             <kbd>Ctrl</kbd>
             <kbd>Alt</kbd>
-            <kbd>Space</kbd>
+            <kbd>P</kbd>
             <span>Open from anywhere</span>
           </div>
         </div>
       </aside>
-      <main>
+      <main id="main-content" tabIndex={-1}>
         <header className="toolbar">
           <form onSubmit={(e) => void submitCapture(e)} className="capture">
-            <Icon name="Search" />
+            <Icon name="Plus" />
             <input
               ref={captureRef}
               aria-label="Quick capture"
-              placeholder="Capture a todo, or type timer 25m…"
+              placeholder="Add a todo, or type timer 25m…"
               value={capture}
               maxLength={240}
               onChange={(e) => setCapture(e.target.value)}
@@ -532,7 +672,8 @@ export default function App() {
             <button
               disabled={busy || !capture.trim()}
               type="submit"
-              title="Capture"
+              title="Add quick capture"
+              aria-label="Add quick capture"
             >
               <Icon name="Plus" />
             </button>
@@ -551,37 +692,18 @@ export default function App() {
         <div className="content">
           <div className="page-heading">
             <div>
-              <h1 tabIndex={-1}>
-                {page === "Fill" ? "Fill this page." : page === "Activity"
-                  ? "A little less switching."
-                  : page === "Tasks"
-                    ? "Make room for focus."
-                    : page === "Projects"
-                      ? "Pick up where you left off."
-                      : page === "Shelf"
-                        ? "Keep it within reach."
-                        : page === "Music"
-                          ? "A soundtrack to your work."
-                          : "Make yourself at home."}
-              </h1>
-              <p>
-                {page === "Fill" ? "Review the questions, generate answers, then fill." : page === "Activity"
-                  ? "What needs you, and what comes next."
-                  : page === "Tasks"
-                    ? "Small tasks. Clear deadlines. One place."
-                    : page === "Projects"
-                      ? "Your folders and next steps, together."
-                      : page === "Shelf"
-                        ? "Temporary notes and file references. Originals stay where they are."
-                        : page === "Music"
-                          ? "Music stays optional. Your other tools work without it."
-                          : "Local data, appearance, and connection status."}
-              </p>
+              <h1 tabIndex={-1}>{pageInfo[page].title}</h1>
+              <p>{pageInfo[page].description}</p>
             </div>
           </div>
           {error && (
             <div className="message error" role="alert">
               <span>{error}</span>
+              {!data && (
+                <button className="small-button" onClick={() => void refresh()}>
+                  Retry loading
+                </button>
+              )}
               <button
                 className="icon-button"
                 title="Dismiss error"
@@ -614,73 +736,32 @@ export default function App() {
             </div>
           ) : (
             <>
-              {page === "Fill" && <Suspense fallback={<p>Loading page helper...</p>}><BrowserFill /></Suspense>}
-              {page === "Activity" && (
-                <>
-                  <Suspense
-                    fallback={
-                      <p className="explanation">Loading local agent tools…</p>
-                    }
-                  >
-                    <AgentPanel navigation={navigation} onNavigated={acknowledgeNavigation} projects={projects} shelf={shelf} todos={items.filter((item) => item.kind === "todo")} />
+              <div hidden={page !== "Fill"} className="page-pane">
+                {(fillVisited || page === "Fill") && (
+                  <Suspense fallback={<p>Loading page helper...</p>}>
+                    <BrowserFill />
                   </Suspense>
-                  <section>
-                    <div className="section-heading">
-                      <h2>
-                        Needs me{" "}
-                        <span className="number">{attention.length}</span>
-                      </h2>
-                      <span className="muted">Only things you can act on</span>
-                    </div>
-                    {attention.length ? (
-                      attention.map((i) => (
-                        <div className="row" key={i.id}>
-                          <span className="attention-dot" />
-                          <div className="grow">
-                            <strong>{i.title}</strong>
-                            <span>
-                              {i.source} ·{" "}
-                              {new Date(i.createdAt).toLocaleString()}
-                            </span>
-                          </div>
-                          <button
-                            className="small-button"
-                            onClick={() =>
-                              void run("toggle_item", { id: i.id })
-                            }
-                          >
-                            Mark seen
-                          </button>
-                        </div>
-                      ))
-                    ) : (
-                      <Empty icon="Check" title="No local reminders need you.">
-                        Timer and reminder alerts appear here. Agent attention
-                        signals will appear once a live connection is verified.
-                      </Empty>
-                    )}
-                  </section>
-                  {timers.some((i) => i.state === "running") && (
-                    <section>
-                      <div className="section-heading">
-                        <h2>In focus</h2>
-                        <button
-                          className="text-button"
-                          onClick={() => {
-                            setPage("Tasks");
-                            setTab("Timers");
-                          }}
-                        >
-                          View timers <Icon name="Arrow" size={14} />
-                        </button>
-                      </div>
-                      {timers
-                        .filter((i) => i.state === "running")
-                        .map((i) => (
-                          <TimerRow key={i.id} item={i} action={run} />
-                        ))}
-                    </section>
-                  )}
+                )}
+              </div>
+              <div hidden={page !== "Codex"} className="page-pane codex-pane">
+                <Suspense
+                  fallback={
+                    <p className="explanation">Loading Codex workspace...</p>
+                  }
+                >
+                  <AgentPanel
+                    visible={page === "Codex"}
+                    navigation={navigation}
+                    onNavigated={acknowledgeNavigation}
+                    onTasksChange={setAgentTasks}
+                    focusTaskId={focusTaskId}
+                    projects={projects}
+                    shelf={shelf}
+                    todos={todos}
+                  />
+                </Suspense>
+                <details className="connections-disclosure">
+                  <summary>Connections and stored history</summary>
                   <section>
                     <div className="section-heading">
                       <h2>Agent connections</h2>
@@ -736,39 +817,159 @@ export default function App() {
                       prompts are sent and no sessions are resumed.
                     </p>
                   </section>
-                  <section className="next-step">
-                    <div>
-                      <h2>One thing at a time.</h2>
-                      <p>
-                        {todos.filter((t) => !t.done).length
-                          ? `${todos.filter((t) => !t.done).length} todos are waiting. Choose one and start a focus timer.`
-                          : "Capture your first todo above, then give it a little focus."}
-                      </p>
+                </details>
+              </div>
+              {page === "Activity" && (
+                <>
+                  {(data.agentAttention || 0) > 0 && (
+                    <div className="attention-banner">
+                      <div>
+                        <strong>Codex needs your attention</strong>
+                        <p>Review a decision, question or task outcome.</p>
+                      </div>
+                      <button
+                        className="small-button"
+                        onClick={() => setPage("Codex")}
+                      >
+                        Review Codex
+                      </button>
                     </div>
-                    <button
-                      className="primary"
-                      onClick={() => {
-                        setPage("Tasks");
-                        setTab("Todos");
-                      }}
-                    >
-                      Open tasks <Icon name="Arrow" size={16} />
-                    </button>
+                  )}
+                  <section>
+                    <div className="section-heading">
+                      <h2>
+                        Needs attention{" "}
+                        <span className="number">{attention.length}</span>
+                      </h2>
+                      <span className="muted">Only things you can act on</span>
+                    </div>
+                    {attention.length ? (
+                      attention.map((i) => (
+                        <div className="row" key={i.id}>
+                          <span className="attention-dot" />
+                          <div className="grow">
+                            <strong>{i.title}</strong>
+                            <span>
+                              {i.source} ·{" "}
+                              {new Date(i.createdAt).toLocaleString()}
+                            </span>
+                          </div>
+                          <button
+                            className="small-button"
+                            onClick={() =>
+                              void run("toggle_item", { id: i.id })
+                            }
+                          >
+                            Mark seen
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <Empty icon="Check" title="No alerts to review.">
+                        Timer and reminder alerts will appear here when they are
+                        due.
+                      </Empty>
+                    )}
+                  </section>
+                  {timers.some((i) => i.state === "running") && (
+                    <section>
+                      <div className="section-heading">
+                        <h2>In focus</h2>
+                        <button
+                          className="text-button"
+                          onClick={() => {
+                            setPage("Tasks", "Timers");
+                          }}
+                        >
+                          View timers <Icon name="Arrow" size={14} />
+                        </button>
+                      </div>
+                      {timers
+                        .filter((i) => i.state === "running")
+                        .map((i) => (
+                          <TimerRow key={i.id} item={i} action={run} />
+                        ))}
+                    </section>
+                  )}
+                  <section className="overview-todos">
+                    <div className="section-heading">
+                      <h2>Next on your list</h2>
+                      <button
+                        className="text-button"
+                        onClick={() => setPage("Tasks", "Todos")}
+                      >
+                        All todos <Icon name="Arrow" size={14} />
+                      </button>
+                    </div>
+                    {todos
+                      .filter((item) => !item.done)
+                      .slice(0, 4)
+                      .map((item) => (
+                        <label className="overview-todo" key={item.id}>
+                          <input
+                            type="checkbox"
+                            checked={false}
+                            onChange={() =>
+                              void run("toggle_item", { id: item.id })
+                            }
+                          />
+                          <span>{item.title}</span>
+                        </label>
+                      ))}
+                    {!todos.some((item) => !item.done) && (
+                      <p className="list-empty">
+                        Your list is clear. Add a todo in the quick-add bar
+                        above.
+                      </p>
+                    )}
+                  </section>
+                  <section className="overview-projects">
+                    <div className="section-heading">
+                      <h2>Continue a project</h2>
+                      <button
+                        className="text-button"
+                        onClick={() => setPage("Projects")}
+                      >
+                        All projects <Icon name="Arrow" size={14} />
+                      </button>
+                    </div>
+                    {projects.slice(0, 3).map((project) => (
+                      <button
+                        key={project.id}
+                        className="project-resume-link"
+                        onClick={() => {
+                          setSelectedProjectId(project.id);
+                          setPage("Projects");
+                        }}
+                      >
+                        <Icon name="Projects" />
+                        <span>
+                          <strong>{project.title}</strong>
+                          <span>
+                            {project.note || "Add a next step in Projects."}
+                          </span>
+                        </span>
+                        <Icon name="Arrow" size={16} />
+                      </button>
+                    ))}
+                    {!projects.length && (
+                      <p className="list-empty">
+                        Save a folder in Projects to keep its next step close.
+                      </p>
+                    )}
                   </section>
                 </>
               )}
               {page === "Tasks" && (
                 <>
-                  <div className="tabs" role="tablist" aria-label="Task type">
+                  <div className="tabs" role="group" aria-label="Task type">
                     {["Todos", "Timers", "Reminders"].map((t) => (
                       <button
-                        role="tab"
-                        aria-selected={tab === t}
+                        aria-pressed={tab === t}
                         key={t}
                         className={tab === t ? "active" : ""}
                         onClick={() => {
                           setTab(t);
-                          clearForm();
                         }}
                       >
                         {t}
@@ -834,7 +1035,9 @@ export default function App() {
                       </button>
                     )}
                   </form>
-                  {tab === "Timers" ? (
+                  {tab === "Todos" ? (
+                    <TaskChecklist items={todos} busy={busy} save={saveTodo} />
+                  ) : tab === "Timers" ? (
                     <>
                       {timers.length ? (
                         timers.map((i) => (
@@ -945,15 +1148,34 @@ export default function App() {
                       )}
                     </>
                   )}
-                  <p className="explanation">
-                    Notifications require the tray app to be running. Quit stops
-                    reminders; overdue items recover next launch. Windows may
-                    suppress banners.
-                  </p>
+                  <details className="help-disclosure">
+                    <summary>
+                      Timers and reminders while Buddy is closed
+                    </summary>{" "}
+                    <p className="explanation">
+                      Notifications require the tray app to be running. Quit
+                      stops reminders; overdue items recover next launch.
+                      Windows may suppress banners.
+                    </p>
+                  </details>
                 </>
               )}
-              {page === "Projects" && (
-                <>
+              <div
+                hidden={page !== "Projects"}
+                className="page-pane projects-pane"
+              >
+                <details
+                  className="compose-panel"
+                  open={projectComposer}
+                  onToggle={(event) =>
+                    setProjectComposer(event.currentTarget.open)
+                  }
+                >
+                  <summary>
+                    {edit?.kind === "project"
+                      ? "Edit project"
+                      : "Add a project"}
+                  </summary>
                   <form
                     className="editor stacked"
                     onSubmit={(e) => void saveForm(e)}
@@ -1005,128 +1227,156 @@ export default function App() {
                       )}
                     </div>
                   </form>
-                  {projects.length ? (
-                    projects.map((i) => (
-                      <article className="project" key={i.id}>
-                        <div className="project-top">
-                          <Icon name="Projects" />
-                          <div className="grow">
-                            <h2>{i.title}</h2>
-                            <span className="path">{i.path}</span>
+                </details>
+                <div className="project-workspace">
+                  <div className="project-list">
+                    {projects.length ? (
+                      projects.map((i) => (
+                        <article className="project" key={i.id}>
+                          <div className="project-top">
+                            <Icon name="Projects" />
+                            <div className="grow">
+                              <h2>{i.title}</h2>
+                              <span className="path">{i.path}</span>
+                            </div>
+                            <button
+                              className="small-button"
+                              onClick={() =>
+                                void run("open_path", { path: i.path })
+                              }
+                            >
+                              Open folder <Icon name="Arrow" size={14} />
+                            </button>
                           </div>
-                          <button
-                            className="small-button"
-                            onClick={() =>
-                              void run("open_path", { path: i.path })
-                            }
-                          >
-                            Open folder <Icon name="Arrow" size={14} />
-                          </button>
-                        </div>
-                        {i.note && <p className="resume-note">{i.note}</p>}
-                        <div className="project-actions">
-                          <button
-                            className="text-button"
-                            onClick={() => {
-                              setEdit(i);
-                              setTitle(i.title);
-                              setProjectPath(i.path);
-                              setNote(i.note);
-                            }}
-                          >
-                            Edit next step
-                          </button>
-                          <button
-                            className="text-button"
-                            onClick={() => {
-                              setRoot(i.path);
-                              setSearch("");
-                              setNotice(
-                                "Search this project using the form below.",
-                              );
-                            }}
-                          >
-                            Search folder
-                          </button>
-                          <button
-                            className="icon-button danger"
-                            title={`Remove project ${i.title}`}
-                            onClick={() =>
-                              void run("remove_item", { id: i.id })
-                            }
-                          >
-                            <Icon name="Trash" />
-                          </button>
-                        </div>
-                      </article>
-                    ))
-                  ) : (
-                    <Empty
-                      icon="Projects"
-                      title="Your next step deserves a home."
-                    >
-                      Save a folder and a short resume note. The next time you
-                      switch projects, start here.
-                    </Empty>
-                  )}
-                  <section>
-                    <div className="section-heading">
-                      <h2>Find in a project</h2>
-                      <span className="muted">Immediate folder only</span>
-                    </div>
-                    <div className="form-pair">
-                      <label className="grow">
-                        Project
-                        <select
-                          value={root}
-                          onChange={(e) => setRoot(e.target.value)}
-                        >
-                          <option value="">Select a saved project</option>
-                          {projects.map((p) => (
-                            <option key={p.id} value={p.path}>
-                              {p.title}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="grow">
-                        Filename or folder
-                        <input
-                          value={search}
-                          onChange={(e) => setSearch(e.target.value)}
-                          placeholder="At least 2 characters"
-                        />
-                      </label>
-                    </div>
-                    {searching ? (
-                      <p role="status">Searching…</p>
-                    ) : (
-                      results.map((r, i) => (
-                        <button
-                          key={i}
-                          className="search-result"
-                          onClick={() =>
-                            void run("open_path", { path: r.path })
-                          }
-                        >
-                          <Icon name={r.folder ? "Projects" : "Shelf"} />
-                          <span>{r.name}</span>
-                          <Icon name="Arrow" size={14} />
-                        </button>
+                          {i.note && <p className="resume-note">{i.note}</p>}
+                          <div className="project-actions">
+                            <button
+                              className="text-button"
+                              onClick={() => {
+                                setSelectedProjectId(i.id);
+                                document
+                                  .getElementById("project-resume-heading")
+                                  ?.focus();
+                              }}
+                            >
+                              Resume
+                            </button>
+                            <button
+                              className="text-button"
+                              onClick={() => {
+                                setProjectComposer(true);
+                                setEdit(i);
+                                setTitle(i.title);
+                                setProjectPath(i.path);
+                                setNote(i.note);
+                              }}
+                            >
+                              Edit project
+                            </button>
+                            <button
+                              className="text-button"
+                              onClick={() => {
+                                setRoot(i.path);
+                                setSearch("");
+                                setNotice(
+                                  "Search this project using the form below.",
+                                );
+                              }}
+                            >
+                              Find files
+                            </button>
+                            <button
+                              className="icon-button danger"
+                              title={`Remove project ${i.title}`}
+                              onClick={() =>
+                                void run("remove_item", { id: i.id })
+                              }
+                            >
+                              <Icon name="Trash" />
+                            </button>
+                          </div>
+                        </article>
                       ))
+                    ) : (
+                      <Empty
+                        icon="Projects"
+                        title="Your next step deserves a home."
+                      >
+                        Save a folder and a short resume note. The next time you
+                        switch projects, start here.
+                      </Empty>
                     )}
-                    {root &&
-                      search.length >= 2 &&
-                      !searching &&
-                      !results.length && (
-                        <p className="explanation">
-                          No matches in this directory. Whole-disk Everything
-                          search is not connected yet.
-                        </p>
-                      )}
-                  </section>
-                </>
-              )}
+                  </div>
+                  <div className="project-detail">
+                    <ProjectResume
+                      projects={projects}
+                      shelf={shelf}
+                      todos={todos}
+                      tasks={agentTasks}
+                      selectedProjectId={selectedProjectId}
+                      onProjectChange={setSelectedProjectId}
+                      onViewTask={(id) => {
+                        setFocusTaskId(id);
+                        setPage("Codex", undefined, false);
+                      }}
+                    />
+                  </div>
+                </div>
+                <section>
+                  <div className="section-heading">
+                    <h2>Find in a project</h2>
+                    <span className="muted">Immediate folder only</span>
+                  </div>
+                  <div className="form-pair">
+                    <label className="grow">
+                      Project
+                      <select
+                        value={root}
+                        onChange={(e) => setRoot(e.target.value)}
+                      >
+                        <option value="">Select a saved project</option>
+                        {projects.map((p) => (
+                          <option key={p.id} value={p.path}>
+                            {p.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="grow">
+                      Filename or folder
+                      <input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="At least 2 characters"
+                      />
+                    </label>
+                  </div>
+                  {searching ? (
+                    <p role="status">Searching…</p>
+                  ) : (
+                    results.map((r, i) => (
+                      <button
+                        key={i}
+                        className="search-result"
+                        onClick={() => void run("open_path", { path: r.path })}
+                      >
+                        <Icon name={r.folder ? "Projects" : "Shelf"} />
+                        <span>{r.name}</span>
+                        <Icon name="Arrow" size={14} />
+                      </button>
+                    ))
+                  )}
+                  {root &&
+                    search.length >= 2 &&
+                    !searching &&
+                    !results.length && (
+                      <p className="explanation">
+                        No matches in this directory. Whole-disk Everything
+                        search is not connected yet.
+                      </p>
+                    )}
+                </section>
+              </div>
               {page === "Shelf" && (
                 <>
                   <div className="drop-zone">
@@ -1141,40 +1391,49 @@ export default function App() {
                       references.
                     </p>
                   </div>
-                  <form
-                    className="editor stacked"
-                    onSubmit={(e) => void saveForm(e)}
+                  <details
+                    className="compose-panel"
+                    open={noteComposer}
+                    onToggle={(event) =>
+                      setNoteComposer(event.currentTarget.open)
+                    }
                   >
-                    <label>
-                      Note title
-                      <input
-                        required
-                        value={title}
-                        maxLength={240}
-                        onChange={(e) => setTitle(e.target.value)}
-                        placeholder="Something worth keeping handy"
-                      />
-                    </label>
-                    <label>
-                      Text
-                      <textarea
-                        required
-                        value={note}
-                        maxLength={65536}
-                        onChange={(e) => setNote(e.target.value)}
-                        rows={3}
-                      />
-                    </label>
-                    <div>
-                      <button
-                        className="primary"
-                        disabled={busy || shelf.length >= 50}
-                      >
-                        Add to shelf
-                        <Icon name="Plus" size={16} />
-                      </button>
-                    </div>
-                  </form>
+                    <summary>Add a note</summary>
+                    <form
+                      className="editor stacked"
+                      onSubmit={(e) => void saveForm(e)}
+                    >
+                      <label>
+                        Note title
+                        <input
+                          required
+                          value={title}
+                          maxLength={240}
+                          onChange={(e) => setTitle(e.target.value)}
+                          placeholder="Something worth keeping handy"
+                        />
+                      </label>
+                      <label>
+                        Text
+                        <textarea
+                          required
+                          value={note}
+                          maxLength={65536}
+                          onChange={(e) => setNote(e.target.value)}
+                          rows={3}
+                        />
+                      </label>
+                      <div>
+                        <button
+                          className="primary"
+                          disabled={busy || shelf.length >= 50}
+                        >
+                          Add to shelf
+                          <Icon name="Plus" size={16} />
+                        </button>
+                      </div>
+                    </form>
+                  </details>
                   {shelf.map((i) => (
                     <article className="shelf-item" key={i.id}>
                       <div className="row">
@@ -1214,13 +1473,26 @@ export default function App() {
                       {i.note && <p>{i.note}</p>}
                       <label>
                         Project for this reference
-                        <select value={projects.some((project) => project.id === i.projectId) ? i.projectId : ""}
-                          disabled={busy} onChange={(event) => void run("save_item", {
-                            item: { ...i, projectId: event.target.value },
-                          })}>
+                        <select
+                          value={
+                            projects.some(
+                              (project) => project.id === i.projectId,
+                            )
+                              ? i.projectId
+                              : ""
+                          }
+                          disabled={busy}
+                          onChange={(event) =>
+                            void run("save_item", {
+                              item: { ...i, projectId: event.target.value },
+                            })
+                          }
+                        >
                           <option value="">Unassigned</option>
                           {projects.map((project) => (
-                            <option key={project.id} value={project.id}>{project.title}</option>
+                            <option key={project.id} value={project.id}>
+                              {project.title}
+                            </option>
                           ))}
                         </select>
                       </label>
@@ -1232,7 +1504,7 @@ export default function App() {
                 <>
                   <div className="music-intro">
                     <Icon name="Music" size={36} />
-                    <h2>Lyrics, when you're ready.</h2>
+                    <h2>Automatic sync is not connected</h2>
                     <p>
                       Playback detection and automatic synchronized lyrics are a
                       later milestone. This module makes no network requests and
@@ -1270,7 +1542,7 @@ export default function App() {
                     </label>
                   </section>
                   <section className="settings-section">
-                    <h2>Your data belongs here.</h2>
+                    <h2>Data and backups</h2>
                     <p className="explanation">
                       Todos, projects, notes, timers, and reminder history stay
                       on this device. Backups contain private text and file
@@ -1329,7 +1601,7 @@ export default function App() {
                     <p className="data-path">{data.dataPath}</p>
                   </section>
                   <section className="settings-section">
-                    <h2>Small by design.</h2>
+                    <h2>Desktop pet</h2>
                     <p className="explanation">
                       Click the floating pet for the compact command bar; /tools
                       opens this window. Drop up to 20 local files or folders
@@ -1360,18 +1632,21 @@ export default function App() {
                         Copy held files
                       </button>
                     </div>
-                    <p className="explanation">
-                      No continuous animation loop, local AI model, clipboard
-                      watcher, or whole-disk crawler. The native timer and
-                      reminder scheduler wakes for deadlines. Closing the window
-                      releases its panel; the tray stays running.
-                    </p>
-                    <p className="explanation">
-                      Build 0.4.0 · Native resource targets are not a benchmark
-                      result. Agent history is read only on request. Automatic
-                      monitoring, Everything and Spotify sync are not connected
-                      yet.
-                    </p>
+                    <details className="help-disclosure">
+                      <summary>Runtime and connection details</summary>{" "}
+                      <p className="explanation">
+                        No continuous animation loop, local AI model, clipboard
+                        watcher, or whole-disk crawler. The native timer and
+                        reminder scheduler wakes for deadlines. Closing the
+                        window releases its panel; the tray stays running.
+                      </p>
+                      <p className="explanation">
+                        Build 0.4.0 · Native resource targets are not a
+                        benchmark result. Agent history is read only on request.
+                        Automatic monitoring, Everything and Spotify sync are
+                        not connected yet.
+                      </p>
+                    </details>
                   </section>
                 </>
               )}
@@ -1379,7 +1654,7 @@ export default function App() {
           )}
         </div>
         <footer>
-          <span>Quietly useful.</span>
+          <span>Desktop Buddy</span>
           <span>
             {native ? "Local desktop utility" : "Browser preview"} · v0.4.0
           </span>

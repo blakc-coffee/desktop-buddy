@@ -49,6 +49,7 @@ struct Snapshot {
     warning: Option<String>,
     native: bool,
     agent_attention: usize,
+    pet_appearance: String,
 }
 
 fn rows(db: &Connection) -> Result<Vec<Item>, String> {
@@ -108,6 +109,7 @@ fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
         warning: core.warning.lock().map_err(err)?.clone(),
         native: true,
         agent_attention: agents::attention_count(&db)?,
+        pet_appearance: db.query_row("SELECT value FROM settings WHERE key='pet_appearance'", [], |row| row.get(0)).unwrap_or_else(|_| "calico".into()),
     })
 }
 #[tauri::command]

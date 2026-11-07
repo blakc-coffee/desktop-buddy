@@ -1,6 +1,6 @@
 ---
 name: Desktop Buddy
-description: A native mini pet and command bar with optional warm charcoal utility tools and restrained mint emphasis.
+description: A native mini pet and command bar with optional warm charcoal utility tools and pet-specific accent colors.
 colors:
   primary: "#b9e59b"
   primary-text: "#1f3020"
@@ -27,7 +27,7 @@ colors:
 typography:
   headline:
     fontFamily: "Segoe UI, system-ui, sans-serif"
-    fontSize: "25px"
+    fontSize: "27px"
     fontWeight: 600
     lineHeight: 1.25
     letterSpacing: "-0.025em"
@@ -87,7 +87,7 @@ The compact Todo window uses the same pet palette, a 24px Todo heading, a single
 
 ## Overview
 
-The existing warm-charcoal utility reference is the visual authority. The panel is restrained, task-first and readable: system typography, flat tonal surfaces, divider-led lists and one mint accent. Light mode retains the component structure with its own semantic palette; system mode follows the OS color preference.
+The warm-charcoal reference remains the base. The panel uses system typography, flat tonal surfaces, divider-led lists and one accent matched to the chosen pet: apricot for Calico, amber for Dog, mint for Panda. Light mode retains the component structure with its own semantic palette; system mode follows the OS color preference.
 
 This documents the current React/CSS implementation. No pet, animation loop, gradients, remote fonts or decoration libraries belong to the approved direction.
 
@@ -170,3 +170,12 @@ The review handoff reports the original four browser/UI findings resolved, with 
 The native pet is a static mint placeholder with a pouch/count and remaining file-hold time. It has no idle render loop. A loaded drag copies references outward; Alt-drag moves it. Expiry is two minutes and never deletes originals.
 
 Click opens a native EDIT/results bar near the pet. It uses the existing charcoal/mint palette and Segoe UI through standard Windows controls, with explicit focus, Enter/arrows/Tab/Escape and an IME guard. Prefer below the pet, clamped above when screen edges require it. No WebView is involved in primary commands. Detailed management is an explicit secondary window. Native interaction, high-contrast and mixed-DPI acceptance remain device checks; do not claim visual/keyboard certification from parser tests.
+
+
+## Task hierarchy, November 2026
+
+Overview contains actionable attention, the next checklist items and short project links. Tasks owns todos, timers and reminders. Projects owns workspace selection and saved next steps. Codex owns explicit requests, decisions and receipts. Browser helper retains capture, review and fill as an explicit sequence. Shelf, Music and Settings keep literal labels.
+
+Project creation, diagnostics and stored history use native disclosure controls. Important pending decisions and uncertain outcomes remain visible. Drafts survive navigation within the current window and stay isolated by form and project. Compact layouts expose every destination through a Tools menu rather than a clipped horizontal strip. Keyboard focus moves to the selected destination; native requests acknowledge only after their target is ready.
+
+See docs/ui-ux-review-2026-11.md for research, the council decision and verification limits.

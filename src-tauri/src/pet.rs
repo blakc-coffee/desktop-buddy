@@ -1002,6 +1002,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             with_state(|state| {
                 state.appearance = appearance;
                 save(&state.app, "pet_appearance", appearance.key());
+                let _ = state.app.emit("data-changed", ());
                 state.motion_set = motion_setting(&state.app, appearance);
                 advance_motion(hwnd, state, None);
             });

@@ -29,6 +29,7 @@ export interface Snapshot {
   warning: string | null;
   native: boolean;
   agentAttention?: number;
+  petAppearance?: string;
   agentHistory?: unknown[];
 }
 export const emptyItem = (kind: Item["kind"], title: string): Item => ({

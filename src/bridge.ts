@@ -9,6 +9,7 @@ const read = (): Snapshot => {
     theme: raw ? JSON.parse(raw).theme : "dark",
     dataPath: "Browser preview storage · separate from the desktop database",
     warning: null,
+    petAppearance: "calico",
     native: false,
     agentHistory: raw ? JSON.parse(raw).agentHistory || [] : [],
   };

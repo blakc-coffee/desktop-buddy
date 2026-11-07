@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:ui": "playwright test",
+    "audit:ui": "node --import tsx tests/ui/audit.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -16,6 +18,8 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
