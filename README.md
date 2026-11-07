@@ -38,6 +38,8 @@ Drop up to 20 local files or folders onto the pet. The pet holds their reference
 
 A successful handoff clears the pet’s hold. A cancelled drag leaves it available until expiry. Clearing, expiry, and quitting discard Buddy’s references. Your source files stay in place.
 
+The pet’s right-click menu, paw list, tray options, and launcher text-edit menu follow the selected pet’s colors and font. Choose a pet or try a motion set from the right-click menu. Windows high-contrast settings use the system menu appearance.
+
 Choose **Try and select motion set** from the tray menu to preview one of five file handoff styles without transferring a file. Buddy also reacts when the launcher opens, focus changes, a to-do is saved or checked off, a reminder comes due, or a managed Codex task changes state. Panda opens its eyes when you open the launcher or it holds a file. Buddy follows the Windows animation setting.
 
 ## Manage work and reminders

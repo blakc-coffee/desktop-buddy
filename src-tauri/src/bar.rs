@@ -76,6 +76,8 @@ struct Bar {
     composing: bool,
     finder: bool,
     file_search: bool,
+    menu_active: bool,
+    menu_theme: Option<crate::menu_theme::MenuTheme>,
 }
 impl Bar {
     fn visible_rows(&self) -> usize {
@@ -297,7 +299,14 @@ unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LR
             if let Ok(state) = state.try_borrow() {
                 if let Some(bar) = state.as_ref() {
                     let hit = WindowFromPoint(point);
-                    let inside = hit == bar.hwnd
+                    let menu_click = if bar.menu_active {
+                        let mut class = [0u16; 32];
+                        let length = GetClassNameW(hit, &mut class).max(0) as usize;
+                        String::from_utf16_lossy(&class[..length]) == "#32768"
+                    } else {
+                        false
+                    };
+                    let inside = menu_click || hit == bar.hwnd
                         || (hit == bar.pet && wp.0 as u32 == WM_LBUTTONDOWN);
                     if !inside && !IsChild(bar.hwnd, hit).as_bool() {
                         let _ = PostMessageW(Some(bar.hwnd), OUTSIDE_CLICK, WPARAM(0), LPARAM(0));
@@ -633,7 +642,37 @@ unsafe fn browse(forward: bool) -> bool {
     changed
 }
 
+unsafe fn theme_edit_menu(menu: HMENU) {
+    change(|bar| {
+        if !bar.menu_active {
+            return;
+        }
+        let palette = pet::appearance().palette();
+        if let Some(theme) = &mut bar.menu_theme {
+            theme.apply(menu, bar.edit, palette, GetDpiForWindow(bar.edit).max(96));
+        } else {
+            bar.menu_theme = crate::menu_theme::prepare(menu, bar.edit, palette);
+        }
+    });
+}
+
 unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if let Some(result) = crate::menu_theme::handle_message(msg, wp, lp) {
+        return result;
+    }
+    if msg == WM_CONTEXTMENU {
+        change(|bar| bar.menu_active = true);
+        let original = get(|bar| bar.old_edit).flatten();
+        let result = CallWindowProcW(original, hwnd, msg, wp, lp);
+        change(|bar| {
+            bar.menu_active = false;
+            bar.menu_theme = None;
+        });
+        return result;
+    }
+    if msg == WM_INITMENUPOPUP {
+        theme_edit_menu(HMENU(wp.0 as _));
+    }
     if msg == WM_IME_STARTCOMPOSITION {
         change(|b| b.composing = true);
     }
@@ -772,6 +811,12 @@ unsafe fn paint(hwnd: HWND) {
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if let Some(result) = crate::menu_theme::handle_message(msg, wp, lp) {
+        return result;
+    }
+    if msg == WM_INITMENUPOPUP {
+        theme_edit_menu(HMENU(wp.0 as _));
+    }
     match msg {
         OUTSIDE_CLICK => {
             hide();
@@ -1026,6 +1071,8 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 composing: false,
                 finder: false,
                 file_search: false,
+                menu_active: false,
+                menu_theme: None,
             })
         });
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);

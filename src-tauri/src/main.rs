@@ -4,6 +4,7 @@ mod bar;
 mod commands;
 mod finder;
 mod model;
+mod menu_theme;
 mod pet;
 mod pet_art;
 use model::*;
@@ -820,20 +821,6 @@ fn main() {
                     unavailable.join(", ")
                 ));
             }
-            let open = MenuItem::with_id(app, "open", "Open Desktop Buddy", true, None::<&str>)?;
-            let commands = MenuItem::with_id(app, "commands", "Toggle toolbar", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit (reminders stop)", true, None::<&str>)?;
-            let show_pet = MenuItem::with_id(app, "show-pet", "Show pet", true, None::<&str>)?;
-            let hide_pet = MenuItem::with_id(app, "hide-pet", "Hide pet", true, None::<&str>)?;
-            let dog = MenuItem::with_id(app, "pet-dog", "Pet · Shiba Inu (Dog)", true, None::<&str>)?;
-            let calico = MenuItem::with_id(app, "pet-calico", "Pet · Calico", true, None::<&str>)?;
-            let panda = MenuItem::with_id(app, "pet-panda", "Pet · Panda", true, None::<&str>)?;
-            let motion = tauri::menu::Submenu::new(app, "Try and select motion set", true)?;
-            for index in 0..5 {
-                let item = MenuItem::with_id(app, format!("motion-{index}"), format!("Set {}", index + 1), true, None::<&str>)?;
-                motion.append(&item)?;
-            }
-            let menu = Menu::with_items(app, &[&open, &commands, &show_pet, &hide_pet, &calico, &dog, &panda, &motion, &quit])?;
             let mut pixels = vec![0u8; 32 * 32 * 4];
             for y in 5..27 {
                 for x in 5..27 {
@@ -846,31 +833,14 @@ fn main() {
                     });
                 }
             }
-            TrayIconBuilder::new()
+            let tray = TrayIconBuilder::new()
                 .icon(tauri::image::Image::new_owned(pixels, 32, 32))
                 .tooltip("Desktop Buddy · Ctrl+Alt+P")
-                .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_panel(app),
-                    "commands" => {
-                        let _ = pet::pet_commands(app.clone());
-                    }
-                    "show-pet" => {
-                        let _ = pet::pet_show(app.clone());
-                    }
-                    "hide-pet" => {
-                        let _ = pet::pet_hide(app.clone());
-                    }
-                    "pet-dog" => pet::set_appearance(app, pet_art::Appearance::Dog),
-                    "pet-calico" => pet::set_appearance(app, pet_art::Appearance::Calico),
-                    "pet-panda" => pet::set_appearance(app, pet_art::Appearance::Panda),
-                    "quit" => request_quit(app),
-                    id => {
-                        if let Some(index) = id.strip_prefix("motion-").and_then(|value| value.parse().ok()) {
-                            pet::preview(app, index);
-                        }
-                    }
+                    "recovery-open" => show_panel(app),
+                    "recovery-quit" => request_quit(app),
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if matches!(
@@ -882,6 +852,13 @@ fn main() {
                         }
                     ) {
                         show_panel(tray.app_handle())
+                    } else if matches!(event, TrayIconEvent::Click {
+                        button: MouseButton::Right,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }) && tray.app_handle().try_state::<Arc<pet::Control>>().is_some()
+                        && pet::pet_menu(tray.app_handle()).is_err() {
+                        show_panel(tray.app_handle())
                     }
                 })
                 .build(app)?;
@@ -892,6 +869,9 @@ fn main() {
                     app.manage(control);
                 }
                 Err(e) => {
+                    let open = MenuItem::with_id(app, "recovery-open", "Open Desktop Buddy", true, None::<&str>)?;
+                    let quit = MenuItem::with_id(app, "recovery-quit", "Quit (reminders stop)", true, None::<&str>)?;
+                    tray.set_menu(Some(Menu::with_items(app, &[&open, &quit])?))?;
                     if let Some(c) = app.try_state::<Shared>() {
                         *c.warning.lock().unwrap() = Some(format!(
                             "Pet unavailable: {e}. Tools remain available from the tray."

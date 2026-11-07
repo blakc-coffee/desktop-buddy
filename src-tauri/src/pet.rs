@@ -745,13 +745,9 @@ unsafe fn show_todos(app: &tauri::AppHandle, hwnd: HWND) {
     let _ = GetWindowRect(hwnd, &mut rect);
     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
     crate::bar::dismiss();
-    let _ = SetForegroundWindow(hwnd);
-    let action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+    let action = crate::menu_theme::track(menu, hwnd,
         rect.left + PAW_BOUNDS.left * dpi / 96, rect.top + PAW_BOUNDS.bottom * dpi / 96,
-        None, hwnd, None).0 as usize;
-    let _ = DestroyMenu(menu);
-    // A second click after dismissal must not remain attached to this menu.
-    let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        appearance().palette()) as usize;
     if action == 2 {
         post_main(app, false);
     } else if let Some(id) = action.checked_sub(100).and_then(|index| actions.get(index)) {
@@ -882,6 +878,9 @@ unsafe fn paint(hwnd: HWND) {
     let _ = EndPaint(hwnd, &ps);
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if let Some(result) = crate::menu_theme::handle_message(msg, wp, lp) {
+        return result;
+    }
     match msg {
         WM_PAINT => {
             paint(hwnd);
@@ -1124,8 +1123,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let mut p = POINT::default();
             let _ = GetCursorPos(&mut p);
             if let Ok(menu) = CreatePopupMenu() {
-                let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools (Ctrl+Alt+P)"));
+                let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools"));
+                let _ = AppendMenuW(menu, MF_STRING, 10, w!("Toggle toolbar (Ctrl+Alt+P)"));
                 let _ = AppendMenuW(menu, MF_STRING, 8, w!("Show open to-dos"));
+                let _ = AppendMenuW(menu, MF_STRING, 9, w!("Show pet"));
                 let _ = AppendMenuW(
                     menu,
                     MF_STRING | MF_DISABLED,
@@ -1141,20 +1142,49 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
                 let _ = AppendMenuW(menu, MF_STRING, 4, w!("Reset position"));
+                if let Ok(pets) = CreatePopupMenu() {
+                    for (index, (pet, label)) in [
+                        (Appearance::Calico, w!("Calico")),
+                        (Appearance::Dog, w!("Shiba Inu")),
+                        (Appearance::Panda, w!("Panda")),
+                    ].into_iter().enumerate() {
+                        let flags = MF_STRING | if pet == appearance() { MF_CHECKED } else { MF_UNCHECKED };
+                        let _ = AppendMenuW(pets, flags, 20 + index, label);
+                    }
+                    if AppendMenuW(menu, MF_POPUP, pets.0 as usize, w!("Choose pet")).is_err() {
+                        let _ = DestroyMenu(pets);
+                    }
+                }
+                if let Ok(motion) = CreatePopupMenu() {
+                    for index in 0..5 {
+                        let label = wide(&format!("Set {}", index + 1));
+                        let _ = AppendMenuW(motion, MF_STRING, 30 + index, PCWSTR(label.as_ptr()));
+                    }
+                    if AppendMenuW(menu, MF_POPUP, motion.0 as usize, w!("Try motion set")).is_err() {
+                        let _ = DestroyMenu(motion);
+                    }
+                }
                 let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit (reminders stop)"));
-                let _ = SetForegroundWindow(hwnd);
-                let action = TrackPopupMenu(
-                    menu,
-                    TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                    p.x,
-                    p.y,
-                    None,
-                    hwnd,
-                    None,
-                )
-                .0;
-                let _ = DestroyMenu(menu);
+                let action = crate::menu_theme::track(menu, hwnd, p.x, p.y, appearance().palette());
                 match action {
+                    9 => {
+                        let _ = PostMessageW(Some(hwnd), SHOW, WPARAM(0), LPARAM(0));
+                    }
+                    10 => {
+                        if let Some(app) = with_state(|s| s.app.clone()) {
+                            crate::bar::toggle(&app, hwnd);
+                        }
+                    }
+                    20..=22 => {
+                        if let Some(app) = with_state(|s| s.app.clone()) {
+                            set_appearance(&app, [Appearance::Calico, Appearance::Dog, Appearance::Panda][action as usize - 20]);
+                        }
+                    }
+                    30..=34 => {
+                        if let Some(app) = with_state(|s| s.app.clone()) {
+                            preview(&app, action as usize - 30);
+                        }
+                    }
                     8 => {
                         if let Some(app) = with_state(|s| s.app.clone()) {
                             show_todos(&app, hwnd);
@@ -1376,6 +1406,9 @@ pub fn pet_hide(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn pet_commands(app: tauri::AppHandle) -> Result<(), String> {
     message(&app, COMMANDS)
+}
+pub fn pet_menu(app: &tauri::AppHandle) -> Result<(), String> {
+    message(app, WM_CONTEXTMENU)
 }
 pub fn close_commands(app: tauri::AppHandle) -> Result<(), String> {
     message(&app, CLOSE_COMMANDS)
