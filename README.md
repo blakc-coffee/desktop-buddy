@@ -26,6 +26,7 @@ Quit an older Buddy instance from its tray menu before launching a newer executa
 | `/w my project` | Find a saved workspace and open it in Cursor or Explorer |
 | `/pet` | Choose a pet and apply its launcher theme |
 | `/codex` | Open Codex tasks in Activity |
+| `/resume` | Pick up a saved project in Activity |
 | `/tools` | Open the detailed tools window |
 | `/copy` | Copy the file references currently held by the pet |
 
@@ -61,6 +62,8 @@ Type `/tools` for **Activity**, **Tasks**, **Projects**, **Shelf**, **Music**, a
 With the native Codex CLI installed and signed in, open **Activity → New task**, select a saved project and model, and submit a prompt. Tasks start with read-only access unless you explicitly select workspace write. Command approvals and questions are handled in Buddy. After the task completes, choose **End connection** to release its runtime.
 
 Save reusable notes in **Projects**. In **New task → Project memory and file references**, you can include that note, an excerpt from one completed task in the same project, and up to eight files inside the workspace. Enter file paths or select them from the Shelf. Codex may send the selected context and any file contents it reads to its service.
+
+Use **Activity → Pick up a project**, or type `/resume` in the launcher, to return to a project. Save your next step, pin Shelf references, link existing open to-dos, and view the latest dated Codex task. **View task details** opens its local receipt. Project notes, references, and linked to-dos persist in Buddy’s local database.
 
 For a question about a menu or notes, open **Activity → Ask about files**. Pick the saved project and a model, then enter your question and add the files inside that project. You can reuse paths saved on the Shelf. Buddy starts the question in a read-only workspace and asks Codex to cite the source. Open the task’s **Completion receipt** to read the answer.
 

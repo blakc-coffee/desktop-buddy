@@ -1153,6 +1153,33 @@
   min-width: 0;
 }
 
+.resume-details {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  min-width: 0;
+}
+
+.resume-details > button {
+  justify-self: start;
+}
+
+.resume-reference {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.resume-reference .grow {
+  flex-basis: 200px;
+}
+
+.resume-note {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .agent-context summary {
   cursor: pointer;
   font-weight: 600;

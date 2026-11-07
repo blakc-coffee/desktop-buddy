@@ -595,7 +595,7 @@ export default function App() {
                       <p className="explanation">Loading local agent tools…</p>
                     }
                   >
-                    <AgentPanel projects={projects} shelf={shelf} />
+                    <AgentPanel projects={projects} shelf={shelf} todos={items.filter((item) => item.kind === "todo")} />
                   </Suspense>
                   <section>
                     <div className="section-heading">
@@ -1185,6 +1185,18 @@ export default function App() {
                         </button>
                       </div>
                       {i.note && <p>{i.note}</p>}
+                      <label>
+                        Project for this reference
+                        <select value={projects.some((project) => project.id === i.projectId) ? i.projectId : ""}
+                          disabled={busy} onChange={(event) => void run("save_item", {
+                            item: { ...i, projectId: event.target.value },
+                          })}>
+                          <option value="">Unassigned</option>
+                          {projects.map((project) => (
+                            <option key={project.id} value={project.id}>{project.title}</option>
+                          ))}
+                        </select>
+                      </label>
                     </article>
                   ))}
                 </>

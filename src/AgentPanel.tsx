@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { call, native } from "./bridge";
 import type { Item } from "./domain";
+import ProjectResume from "./ProjectResume";
 type Question = {
   id: string;
   question: string;
@@ -15,7 +16,7 @@ type Interaction = {
   canApprove: boolean;
   questions: Question[];
 };
-type AgentTask = {
+export type AgentTask = {
   id: string;
   title: string;
   prompt: string;
@@ -57,7 +58,7 @@ const states: Record<string, string> = {
   cancelled: "Cancelled",
   unknown: "Outcome unknown",
 };
-export default function AgentPanel({ projects, shelf }: { projects: Item[]; shelf: Item[] }) {
+export default function AgentPanel({ projects, shelf, todos }: { projects: Item[]; shelf: Item[]; todos: Item[] }) {
   const [tasks, setTasks] = useState<AgentTask[]>([]),
     [models, setModels] = useState<Model[]>([]),
     [model, setModel] = useState(""),
@@ -175,6 +176,8 @@ export default function AgentPanel({ projects, shelf }: { projects: Item[]; shel
     clearContext();
   }
   return (
+    <>
+    <ProjectResume projects={projects} shelf={shelf} todos={todos} tasks={tasks} />
     <section className="agent-panel" aria-label="Managed Codex tasks">
       <div className="section-heading">
         <h2>Codex workspace</h2>
@@ -371,6 +374,7 @@ export default function AgentPanel({ projects, shelf }: { projects: Item[]; shel
         <TaskRow key={t.id} task={t} operation={operation} />
       ))}
     </section>
+    </>
   );
 }
 function TaskRow({
@@ -402,7 +406,7 @@ function TaskRow({
   const needs = t.pending.length > 0,
     done = ["completed", "failed", "cancelled", "unknown"].includes(t.state);
   return (
-    <article className={"agent-task " + (needs ? "agent-needs" : "")}>
+    <article id={"agent-task-" + t.id} tabIndex={-1} className={"agent-task " + (needs ? "agent-needs" : "")}>
       <div className="agent-task-heading">
         <div className="grow">
           <strong>{t.title}</strong>
