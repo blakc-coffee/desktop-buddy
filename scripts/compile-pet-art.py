@@ -60,8 +60,8 @@ def draw(node, dx=0, dy=0):
             tx, ty = re.fullmatch(r"translate\(([-\d.]+) ([-\d.]+)\)", transform).groups()
             dx += float(tx)
             dy += float(ty)
-        if node.get("id") == "sleep-eyes":
-            yield "if !awake {"
+        if node.get("id") in ("sleep-eyes", "awake-eyes"):
+            yield "if !awake {" if node.get("id") == "sleep-eyes" else "if awake {"
             for child in node:
                 yield from ("    " + line for line in draw(child, dx, dy))
             yield "}"

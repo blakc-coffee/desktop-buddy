@@ -189,3 +189,8 @@ Screen helper replaces the browser-only primary destination. `/exp` captures and
 ## Floating held-file labels and compact explanations
 
 Multiple held references flank the pet as small native labels with drawn type icons, readable names and pet-palette surfaces. They preserve the held pose, follow pet movement, ignore pointer input and stop at the work-area edges. The hold has no countdown or automatic expiry. `/exp` uses a small themed explanation window; screen capture exposes explicit display/window-area/rectangle choices. Generated answers remain copyable after failed typing. See docs/file-cluster-and-screen-polish-0.4.md.
+
+
+## Species Todo controls and panda rest pose
+
+The Todo control uses a fish for Calico, a bone for Dog and bamboo for Panda, drawn natively in each pet palette. Its existing hit target, count and reminder-due treatment are preserved. Clicking still opens the compact Todo checklist. Panda now curls onto a small bamboo bolster with folded front paws; the disconnected beige floor oval is removed. Sleeping and awake eyes are generated from the same SVG asset to stay aligned with its face. Pickup, held, release and reduced-motion states retain the same behavior.

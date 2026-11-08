@@ -1945,6 +1945,120 @@ impl Canvas {
 
 include!("pet_final.rs");
 
+/// Species-specific Todo control, drawn in the pet's logical 96-DPI space.
+pub unsafe fn draw_todo_icon(dc: HDC, appearance: Appearance, due: bool) {
+    use ArtPath::*;
+    let palette = appearance.palette();
+    let canvas = Canvas { dc, dpi: 96 };
+    let (background, ink) = if due {
+        (palette.accent, palette.surface)
+    } else {
+        (palette.surface, palette.accent)
+    };
+    canvas.oval([30, 30, 300, 310], Some(background), None, 0);
+    match appearance {
+        Appearance::Dog | Appearance::Husky => {
+            canvas.path(
+                &[
+                    Move(100, 120),
+                    Curve(80, 80, 50, 90, 45, 110),
+                    Curve(30, 125, 35, 140, 55, 155),
+                    Curve(30, 170, 30, 190, 50, 205),
+                    Curve(70, 220, 90, 210, 100, 180),
+                    Line(210, 180),
+                    Curve(220, 210, 245, 220, 265, 200),
+                    Curve(285, 180, 280, 165, 260, 155),
+                    Curve(280, 140, 280, 120, 265, 105),
+                    Curve(245, 85, 220, 90, 210, 120),
+                    Close,
+                ],
+                Some(ink),
+                None,
+                0,
+            );
+        }
+        Appearance::Panda => {
+            canvas.path(
+                &[
+                    Move(85, 70),
+                    Line(135, 70),
+                    Line(135, 275),
+                    Line(85, 275),
+                    Close,
+                    Move(175, 125),
+                    Line(215, 125),
+                    Line(215, 280),
+                    Line(175, 280),
+                    Close,
+                ],
+                Some(ink),
+                None,
+                0,
+            );
+            canvas.path(
+                &[
+                    Move(85, 130),
+                    Line(135, 130),
+                    Move(85, 205),
+                    Line(135, 205),
+                    Move(175, 190),
+                    Line(215, 190),
+                    Move(175, 245),
+                    Line(215, 245),
+                ],
+                None,
+                Some(background),
+                12,
+            );
+            canvas.path(
+                &[
+                    Move(135, 145),
+                    Curve(145, 95, 180, 70, 210, 75),
+                    Curve(195, 105, 170, 135, 135, 145),
+                    Close,
+                    Move(175, 220),
+                    Curve(145, 210, 140, 175, 145, 155),
+                    Curve(170, 175, 180, 195, 175, 220),
+                    Close,
+                    Move(215, 170),
+                    Curve(220, 130, 245, 115, 265, 120),
+                    Curve(255, 150, 240, 165, 215, 170),
+                    Close,
+                ],
+                Some(ink),
+                None,
+                0,
+            );
+        }
+        _ => {
+            canvas.path(
+                &[
+                    Move(85, 160),
+                    Line(25, 110),
+                    Line(25, 245),
+                    Line(85, 205),
+                    Close,
+                    Move(125, 120),
+                    Line(170, 75),
+                    Line(205, 125),
+                    Close,
+                ],
+                Some(ink),
+                None,
+                0,
+            );
+            canvas.oval([65, 115, 280, 255], Some(ink), None, 0);
+            canvas.oval([225, 150, 246, 171], Some(background), None, 0);
+            canvas.path(
+                &[Move(150, 140), Curve(170, 175, 170, 205, 150, 230)],
+                None,
+                Some(background),
+                11,
+            );
+        }
+    }
+}
+
 /// Primary entry point for rendering the pet in GDI with native DPI scaling.
 pub unsafe fn draw_pose(
     dc: HDC,
@@ -1980,10 +2094,6 @@ pub unsafe fn draw_pose(
     SetPolyFillMode(dc, WINDING);
     let canvas = Canvas { dc, dpi };
     draw_final_art(&canvas, appearance, awake);
-    if appearance == Appearance::Panda && awake {
-        canvas.oval([310, 762, 357, 812], Some(rgb(255, 244, 221)), None, 0);
-        canvas.oval([556, 724, 604, 776], Some(rgb(255, 244, 221)), None, 0);
-    }
     if let Some((file_x, file_y)) = file_motion {
         use ArtPath::*;
         let palette = appearance.palette();

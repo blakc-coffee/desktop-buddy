@@ -676,7 +676,7 @@ enum ReminderMark {
 }
 
 impl Indicators {
-    fn shows_paw(&self) -> bool {
+    fn shows_todo(&self) -> bool {
         self.todo_count > 0 || self.reminder.is_some()
     }
 
@@ -752,26 +752,8 @@ fn timer_bounds(has_files: bool) -> RECT {
     RECT { left: if has_files { 51 } else { 9 }, top: 111, right: 119, bottom: 132 }
 }
 
-const PAW_BOUNDS: RECT = RECT { left: 3, top: 3, right: 47, bottom: 31 };
+const TODO_BOUNDS: RECT = RECT { left: 3, top: 3, right: 47, bottom: 31 };
 const NOTICE_BOUNDS: RECT = RECT { left: 9, top: 91, right: 119, bottom: 109 };
-
-unsafe fn paw_badge(dc: HDC, due: bool, palette: pet_art::Palette) {
-    let surface = CreateSolidBrush(if due { palette.accent } else { palette.surface });
-    let pads = CreateSolidBrush(if due { palette.surface } else { palette.accent });
-    let previous_brush = SelectObject(dc, surface.into());
-    let previous_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    let r = PAW_BOUNDS;
-    let _ = Ellipse(dc, r.left, r.top, 31, r.bottom);
-    SelectObject(dc, pads.into());
-    for (left, top) in [(8, 13), (12, 9), (18, 9), (22, 13)] {
-        let _ = Ellipse(dc, left, top, left + 5, top + 6);
-    }
-    let _ = Ellipse(dc, 11, 17, 23, 25);
-    SelectObject(dc, previous_pen);
-    SelectObject(dc, previous_brush);
-    let _ = DeleteObject(surface.into());
-    let _ = DeleteObject(pads.into());
-}
 
 unsafe fn show_todos(app: &tauri::AppHandle, _hwnd: HWND) {
     crate::bar::dismiss();
@@ -851,7 +833,7 @@ unsafe fn paint(hwnd: HWND) {
         let timer = state.indicators.visible_timer().and_then(PetTimer::display);
         let awake = file_motion.is_some() || bar_open || timer.is_some_and(|(_, running)| running)
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
-        let paw = state.indicators.shows_paw().then_some((
+        let paw = state.indicators.shows_todo().then_some((
             matches!(state.indicators.reminder, Some(ReminderMark::Due)), state.indicators.todo_count));
         let importing = state.control.importing.load(Ordering::SeqCst)
             && state.control.active_import.load(Ordering::SeqCst) == state.control.import_generation.load(Ordering::SeqCst);
@@ -873,10 +855,10 @@ unsafe fn paint(hwnd: HWND) {
     };
     let previous_font = (!font.0.is_null()).then(|| SelectObject(dc, font.into()));
     if let Some((due, pending)) = paw {
-        paw_badge(dc, due, palette);
+        pet_art::draw_todo_icon(dc, appearance, due);
         if pending > 0 {
             let label = if pending > 9 { "9+".into() } else { pending.to_string() };
-            badge(dc, RECT { left: 27, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
+            badge(dc, RECT { left: 29, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
         }
     }
     if let Some(label) = notice {
@@ -1156,8 +1138,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     if let Some((app, timer, paw)) = with_state(|s| {
                         let r = timer_bounds(!s.files.is_empty());
                         let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-                        let paw = PAW_BOUNDS;
-                        let hits_paw = s.indicators.shows_paw()
+                        let paw = TODO_BOUNDS;
+                        let hits_paw = s.indicators.shows_todo()
                             && x >= paw.left && x < paw.right && y >= paw.top && y < paw.bottom;
                         (s.app.clone(), s.indicators.visible_timer().filter(|_| hit).map(|timer| (timer.id.clone(), timer.action())), hits_paw)
                     }) {
@@ -1557,6 +1539,98 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn render_species_todo_badges_and_idle_held_poses_offscreen() {
+        unsafe {
+            let (width, height) = (880, 610);
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: 40,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let old = SelectObject(dc, bitmap.into());
+            let background = CreateSolidBrush(pet_art::rgb(29, 32, 34));
+            FillRect(
+                dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: width,
+                    bottom: height,
+                },
+                background,
+            );
+            let _ = DeleteObject(background.into());
+            for (column, appearance) in [Appearance::Calico, Appearance::Dog, Appearance::Panda]
+                .into_iter()
+                .enumerate()
+            {
+                for row in 0..2 {
+                    let saved = SaveDC(dc);
+                    let _ = SetViewportOrgEx(dc, 12 + column as i32 * 290, 12 + row * 300, None);
+                    let held = row == 1;
+                    let pose = if held {
+                        AnimationSet::reduced_motion_pose(AnimationPhase::Held)
+                    } else {
+                        AnimationSet::neutral_still_pose()
+                    };
+                    pet_art::draw_pose(
+                        dc,
+                        appearance,
+                        false,
+                        192,
+                        pose,
+                        held.then_some((0, 0)),
+                        held,
+                        None,
+                    );
+                    SetMapMode(dc, MM_ANISOTROPIC);
+                    let _ = SetWindowExtEx(dc, 96, 96, None);
+                    let _ = SetViewportExtEx(dc, 192, 192, None);
+                    pet_art::draw_todo_icon(dc, appearance, held);
+                    let _ = RestoreDC(dc, saved);
+                }
+            }
+            let pixels = std::slice::from_raw_parts(bits as *const u8, (width * height * 4) as usize);
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .filter(|p| p[0] > 100 && p[1] > 100 && p[2] > 100)
+                    .count()
+                    > 3000
+            );
+            if let Some(path) = std::env::var_os("BUDDY_PET_THEME_PREVIEW") {
+                let rgb: Vec<_> = pixels
+                    .chunks_exact(4)
+                    .flat_map(|p| [p[2], p[1], p[0]])
+                    .collect();
+                let mut out = Vec::new();
+                {
+                    let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+                    encoder.set_color(png::ColorType::Rgb);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder
+                        .write_header()
+                        .unwrap()
+                        .write_image_data(&rgb)
+                        .unwrap();
+                }
+                std::fs::write(path, out).unwrap();
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+        }
+    }
     #[test]
     fn shell_file_data_roundtrips_multiple_unicode_paths_without_touching_originals() {
         unsafe {
