@@ -1,5 +1,7 @@
 # File cluster and screen helper polish
 
+Updated: [expandable, individually draggable file cards](expandable-file-cards-0.4.md) replace the original click-through labels described below.
+
 ## Held files
 
 Two or more held files create native click-through labels beside the pet. Every label shows its filename and a drawn type icon: folder, PDF, text/document, spreadsheet, image, code, archive or generic file. Long filenames ellipsize; the existing held-file command provides full names. Labels follow the pet and clamp to the monitor work area. They have no idle animation or independent pointer interaction.

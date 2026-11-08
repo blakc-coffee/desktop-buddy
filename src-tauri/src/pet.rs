@@ -236,14 +236,14 @@ fn motion_setting(app: &tauri::AppHandle, appearance: Appearance) -> usize {
         .filter(|index| *index < 5)
         .unwrap_or(0)
 }
-unsafe fn sync_halo(hwnd: HWND) {
-    if let Some((files, palette)) = with_state(|s| (s.files.clone(), s.appearance.palette())) {
-        crate::file_halo::sync(hwnd, &files, palette);
+pub(crate) unsafe fn refresh_file_cards(hwnd: HWND) {
+    if let Some((files, palette, generation)) = with_state(|s| (s.files.clone(), s.appearance.palette(), s.hold_generation)) {
+        crate::file_halo::sync(hwnd, &files, palette, generation);
     }
 }
 unsafe fn refresh_hold(hwnd: HWND) {
     with_state(|s| publish(s));
-    sync_halo(hwnd);
+    refresh_file_cards(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
 fn format() -> FORMATETC {
@@ -507,6 +507,60 @@ unsafe fn finish_handoff(hwnd: HWND, state: &mut State, generation: u64) {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
 }
+fn remove_handed_off_file(
+    files: &mut Vec<PathBuf>,
+    current: u64,
+    captured: u64,
+    path: &Path,
+) -> bool {
+    if current != captured {
+        return false;
+    }
+    let Some(index) = files.iter().position(|file| file == path) else {
+        return false;
+    };
+    files.remove(index);
+    true
+}
+pub(crate) unsafe fn drag_held_file(hwnd: HWND, path: PathBuf, generation: u64) {
+    let control = with_state(|s| {
+        (s.hold_generation == generation && s.files.contains(&path)).then(|| s.control.clone())
+    })
+    .flatten();
+    let Some(control) = control else {
+        return;
+    };
+    let result = (|| -> Result<bool, String> {
+        let data = shell_data(vec![path.clone()])?;
+        let source: IDropSource = Source { control }.into();
+        let mut effect = DROPEFFECT_NONE;
+        let status = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
+        if status == DRAGDROP_S_CANCEL {
+            return Ok(false);
+        }
+        status.ok().map_err(err)?;
+        Ok(status == DRAGDROP_S_DROP && effect == DROPEFFECT_COPY)
+    })();
+    with_state(|s| {
+        if matches!(result, Ok(true))
+            && remove_handed_off_file(&mut s.files, s.hold_generation, generation, &path)
+        {
+            if s.files.is_empty() {
+                advance_motion(hwnd, s, Some((AnimationPhase::Release, 0, false)));
+            }
+            publish(s);
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        if let Ok(mut status) = s.control.status.lock() {
+            status.message = match result {
+                Ok(true) => "File handoff accepted. Other files remain held.".into(),
+                Ok(false) => "Drag cancelled. The file remains held.".into(),
+                Err(error) => error,
+            };
+        }
+    });
+}
+
 unsafe fn shell_data(files: Vec<PathBuf>) -> Result<IDataObject, String> {
     let files = validated(files)?;
     let mut ids = Vec::new();
@@ -881,7 +935,7 @@ unsafe fn paint(hwnd: HWND) {
         let _ = DeleteObject(font.into());
     }
     let _ = EndPaint(hwnd, &ps);
-    sync_halo(hwnd);
+    refresh_file_cards(hwnd);
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if let Some(result) = crate::menu_theme::handle_message(msg, wp, lp) {
@@ -893,7 +947,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let _ = PostMessageW(Some(hwnd), HALO_REFRESH, WPARAM(0), LPARAM(0));
             result
         }
-        HALO_REFRESH => { sync_halo(hwnd); LRESULT(0) }
+        HALO_REFRESH => { refresh_file_cards(hwnd); LRESULT(0) }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -1539,6 +1593,16 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn individual_handoff_removes_only_its_file_and_never_consumes_a_newer_hold() {
+        let original=vec![PathBuf::from("a.txt"),PathBuf::from("b.pdf"),PathBuf::from("c.xlsx")];
+        let mut files=original.clone();
+        assert!(!remove_handed_off_file(&mut files,8,7,Path::new("b.pdf")));
+        assert_eq!(files,original);
+        assert!(remove_handed_off_file(&mut files,8,8,Path::new("b.pdf")));
+        assert_eq!(files,vec![PathBuf::from("a.txt"),PathBuf::from("c.xlsx")]);
+        assert!(!remove_handed_off_file(&mut files,8,8,Path::new("b.pdf")));
+    }
     #[test]
     fn render_species_todo_badges_and_idle_held_poses_offscreen() {
         unsafe {

@@ -1950,12 +1950,8 @@ pub unsafe fn draw_todo_icon(dc: HDC, appearance: Appearance, due: bool) {
     use ArtPath::*;
     let palette = appearance.palette();
     let canvas = Canvas { dc, dpi: 96 };
-    let (background, ink) = if due {
-        (palette.accent, palette.surface)
-    } else {
-        (palette.surface, palette.accent)
-    };
-    canvas.oval([30, 30, 300, 310], Some(background), None, 0);
+    let background = palette.surface;
+    let ink = if due { palette.ink } else { palette.accent };
     match appearance {
         Appearance::Dog | Appearance::Husky => {
             canvas.path(

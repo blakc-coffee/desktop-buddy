@@ -345,6 +345,13 @@ pub fn dismiss() {
         hide();
     }
 }
+pub(crate) unsafe fn raise_if_open() {
+    if let Some(hwnd) = get(|bar| bar.hwnd) {
+        if IsWindowVisible(hwnd).as_bool() {
+            let _ = SetWindowPos(hwnd,Some(HWND_TOPMOST),0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+        }
+    }
+}
 pub fn repaint_theme() {
     if let Some(hwnd) = get(|bar| bar.hwnd) {
         unsafe {

@@ -1,12 +1,12 @@
 //! Pet-colored native menus. Windows retains selection, keyboard navigation and dismissal.
 use crate::pet_art::Palette;
 use windows::{
-    core::{w, PWSTR},
+    core::{w, PWSTR, BOOL},
     Win32::{
         Foundation::*,
         Graphics::Gdi::*,
         UI::{
-            Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
+            Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW, HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
             Controls::*,
             HiDpi::GetDpiForWindow,
             WindowsAndMessaging::*,
@@ -183,6 +183,7 @@ impl MenuTheme {
 
 /// Takes ownership of the menu and all of its submenus.
 pub unsafe fn track(menu: HMENU, owner: HWND, x: i32, y: i32, palette: Palette) -> u32 {
+    let _front = MenuFront::new(owner);
     let theme = prepare(menu, owner, palette);
     let _ = SetForegroundWindow(owner);
     let action = TrackPopupMenu(
@@ -199,6 +200,106 @@ pub unsafe fn track(menu: HMENU, owner: HWND, x: i32, y: i32, palette: Palette) 
     drop(theme);
     let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
     action as u32
+}
+
+// Applies to newly opened submenu windows as well as the first popup.
+unsafe extern "system" fn raise_popup(
+    _: HWINEVENTHOOK,
+    event: u32,
+    window: HWND,
+    _: i32,
+    _: i32,
+    thread: u32,
+    _: u32,
+) {
+    if event != EVENT_SYSTEM_MENUPOPUPSTART || window.0.is_null() {
+        return;
+    }
+    let _ = raise_menu_window(window, LPARAM(0));
+    // MENUPOPUPSTART may identify the activating control rather than the popup.
+    let _ = EnumThreadWindows(thread, Some(raise_menu_window), LPARAM(0));
+}
+unsafe extern "system" fn raise_menu_window(window: HWND, _: LPARAM) -> BOOL {
+    let mut class = [0u16; 32];
+    let count = GetClassNameW(window, &mut class);
+    if String::from_utf16_lossy(&class[..count.max(0) as usize]) == "#32768" {
+        let _ = SetWindowPos(
+            window,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+    }
+    BOOL(1)
+}
+struct MenuFront {
+    owner: HWND,
+    style: isize,
+    hook: HWINEVENTHOOK,
+    previous_menu: bool,
+}
+impl MenuFront {
+    unsafe fn new(owner: HWND) -> Self {
+        let previous_menu = crate::file_halo::menu_open(true);
+        let style = GetWindowLongPtrW(owner, GWL_EXSTYLE);
+        // The pet normally declines activation; an explicit context menu needs
+        // a foreground owner so Windows gives it normal dismissal and z-order.
+        if style & WS_EX_NOACTIVATE.0 as isize != 0 {
+            SetWindowLongPtrW(owner, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE.0 as isize));
+        }
+        let _ = SetWindowPos(
+            owner,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        let thread = GetWindowThreadProcessId(owner, None);
+        let hook = SetWinEventHook(
+            EVENT_SYSTEM_MENUPOPUPSTART,
+            EVENT_SYSTEM_MENUPOPUPSTART,
+            None,
+            Some(raise_popup),
+            std::process::id(),
+            thread,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        Self {
+            owner,
+            style,
+            hook,
+            previous_menu,
+        }
+    }
+}
+impl Drop for MenuFront {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.hook.0.is_null() {
+                let _ = UnhookWinEvent(self.hook);
+            }
+            if IsWindow(Some(self.owner)).as_bool() {
+                SetWindowLongPtrW(self.owner, GWL_EXSTYLE, self.style);
+                if self.style & WS_EX_TOPMOST.0 as isize == 0 {
+                    let _ = SetWindowPos(
+                        self.owner,
+                        Some(HWND_NOTOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
+                }
+            }
+            crate::file_halo::menu_open(self.previous_menu);
+        }
+    }
 }
 
 /// Keeps drawing resources alive for a menu owned and destroyed by Windows.
@@ -359,6 +460,24 @@ fn mnemonic_matches(text: &[u16], character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn menu_front_guard_restores_hidden_owner_styles_without_showing_it() {
+        unsafe {
+            let owner=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,w!("STATIC"),w!("Hidden menu owner fixture"),WS_POPUP,0,0,1,1,None,None,None,None).unwrap();
+            let original=GetWindowLongPtrW(owner,GWL_EXSTYLE);
+            {let _guard=MenuFront::new(owner);
+                let active=GetWindowLongPtrW(owner,GWL_EXSTYLE);
+                assert_eq!(active & WS_EX_NOACTIVATE.0 as isize,0);
+                // Hidden-window z-order can be deferred by Windows. This
+                // fixture verifies activation-style lifetime without showing
+                // a menu; visible stacking remains a device acceptance check.
+                assert!(!IsWindowVisible(owner).as_bool());
+            }
+            assert_eq!(GetWindowLongPtrW(owner,GWL_EXSTYLE),original);
+            assert!(!IsWindowVisible(owner).as_bool());
+            DestroyWindow(owner).unwrap();
+        }
+    }
     use crate::pet_art::Appearance;
 
     #[test]

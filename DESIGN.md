@@ -167,7 +167,7 @@ The review handoff reports the original four browser/UI findings resolved, with 
 
 ## Native primary surfaces (0.4)
 
-The native pet keeps its holding pose and pouch while references are held. Multiple files show click-through labels beside the pet with file-type icons and ellipsized names. Labels follow its position and respect display bounds. There is no file countdown, automatic hold expiry or idle label animation. A loaded drag copies references outward; Alt-drag moves it. Clearing and handoff never delete originals.
+The native pet keeps its holding pose and pouch while references are held. Held files show individually draggable cards with file-type icons and ellipsized names; more than three collapse behind a Show/Hide count card. Labels follow its position and respect display bounds. There is no file countdown, automatic hold expiry or idle label animation. A loaded drag copies references outward; Alt-drag moves it. Clearing and handoff never delete originals.
 
 Click opens a native EDIT/results bar near the pet. It uses the existing charcoal/mint palette and Segoe UI through standard Windows controls, with explicit focus, Enter/arrows/Tab/Escape and an IME guard. Prefer below the pet, clamped above when screen edges require it. No WebView is involved in primary commands. Detailed management is an explicit secondary window. Native interaction, high-contrast and mixed-DPI acceptance remain device checks; do not claim visual/keyboard certification from parser tests.
 
@@ -188,9 +188,14 @@ Screen helper replaces the browser-only primary destination. `/exp` captures and
 
 ## Floating held-file labels and compact explanations
 
-Multiple held references flank the pet as small native labels with drawn type icons, readable names and pet-palette surfaces. They preserve the held pose, follow pet movement, ignore pointer input and stop at the work-area edges. The hold has no countdown or automatic expiry. `/exp` uses a small themed explanation window; screen capture exposes explicit display/window-area/rectangle choices. Generated answers remain copyable after failed typing. See docs/file-cluster-and-screen-polish-0.4.md.
+Multiple held references flank the pet as small native labels with drawn type icons, readable names and pet-palette surfaces. They preserve the held pose, follow pet movement, accept individual file drags and stop at work-area edges. The hold has no countdown or automatic expiry. `/exp` uses a small themed explanation window; screen capture exposes explicit display/window-area/rectangle choices. Generated answers remain copyable after failed typing. See docs/file-cluster-and-screen-polish-0.4.md.
 
 
 ## Species Todo controls and panda rest pose
 
-The Todo control uses a fish for Calico, a bone for Dog and bamboo for Panda, drawn natively in each pet palette. Its existing hit target, count and reminder-due treatment are preserved. Clicking still opens the compact Todo checklist. Panda now curls onto a small bamboo bolster with folded front paws; the disconnected beige floor oval is removed. Sleeping and awake eyes are generated from the same SVG asset to stay aligned with its face. Pickup, held, release and reduced-motion states retain the same behavior.
+The Todo control uses a fish for Calico, a bone for Dog and bamboo for Panda, drawn natively in each pet palette without a circle behind the symbol. Its existing hit target, count and reminder-due treatment are preserved. Clicking still opens the compact Todo checklist. Panda now curls onto a small bamboo bolster with folded front paws; the disconnected beige floor oval is removed. Sleeping and awake eyes are generated from the same SVG asset to stay aligned with its face. Pickup, held, release and reduced-motion states retain the same behavior.
+
+
+## Expandable file cards
+
+One to three files show individual drag cards. Four or more start collapsed; Show reveals the filenames and Hide collapses them. An accepted individual copy removes only that file, while cancelled/rejected drops preserve it. Context menus temporarily hide the cards, take foreground ownership and raise native popups/submenus above ordinary windows; the command bar stays above cards. See docs/expandable-file-cards-0.4.md.
