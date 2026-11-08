@@ -636,6 +636,12 @@ pub async fn screen_explain(
 mod tests {
     use super::*;
     #[test]
+    fn failed_followups_preserve_capture_identity_and_produce_a_ready_error() {
+        let value=followup_failure(&json!({"captureId":"same-screen"}),"next question","Connection failed");
+        assert_eq!(value["captureId"],"same-screen");assert_eq!(value["busy"],false);
+        assert_eq!(value["error"],"Connection failed");assert_eq!(value["question"],"next question");
+    }
+    #[test]
     fn followups_keep_previous_answer_and_latest_question_with_bounded_unicode_context() {
         let previous=json!({"question":"What is a binary tree?","explanation":"Each node has at most two children."});
         let context=followup_context(&previous,"Show an example").unwrap();
@@ -805,7 +811,20 @@ pub async fn bubble_followup(app:tauri::AppHandle,state:tauri::State<'_,Arc<Scre
     let context=followup_context(&previous,&question)?;
     if let Some(id)=previous["captureId"].as_str() {
         current(&state,id)?;
-        screen_explain(app.clone(),state,id.into(),String::new(),context,false,Some(true)).await?;
+        let owned=state.inner().clone();
+        let result=screen_explain(app.clone(),state,id.into(),String::new(),context.clone(),false,Some(true)).await;
+        if let Err(error)=result {
+            if owned.busy.load(Ordering::SeqCst) {return Err(error);}
+            crate::pet::thinking(&app,false);
+            let value=followup_failure(&previous,&context,&error);
+            if let Ok(mut saved)=owned.result.lock() {*saved=value;}
+            let _=app.emit("screen-result",());
+            show_bubble(&app);
+        }
         Ok(())
     } else {quick_answer(app,context)}
+}
+
+fn followup_failure(previous:&Value,question:&str,error:&str)->Value {
+    json!({"title":"Explanation","question":question,"captureId":previous["captureId"],"explanation":"","busy":false,"error":error})
 }

@@ -10,4 +10,6 @@ Follow-ups use the prior question and answer as bounded context. Screen explanat
 
 Validation uses isolated browser fixtures, native hit-boundary tests, bounded Unicode follow-up context tests and offscreen pet rendering. It does not capture or fill the user's active applications. Native outside-click delivery and pet loading appearance still benefit from real-device use; no broad per-app claims are made.
 
-Checks passed: 61 native tests, 8 frontend unit tests, and the targeted ready-only/scroll/follow-up/outside-click/accessibility workflows after fixing keyboard focus on the scrolling region. Headless previews show a short answer at about 196 logical pixels high and long content capped at 336 inside the 360-pixel native window.
+Checks passed: 62 native tests, 8 frontend unit tests, and the targeted ready-only/scroll/follow-up/outside-click/accessibility workflows after fixing keyboard focus on the scrolling region. Headless previews show a short answer at about 196 logical pixels high and long content capped at 336 inside the 360-pixel native window.
+
+Failed screen follow-ups stop the pet loading state and reopen a ready error bubble while retaining the capture identity for retry.
