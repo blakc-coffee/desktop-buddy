@@ -17,14 +17,14 @@ export function destinationPage(destination: PanelDestination) {
   switch (destination) {
     case "codex":
     case "ask":
-      return "Codex";
+      return "Settings";
     case "screenCapture":
     case "screenExplain":
     case "fill":
       return "Fill";
     case "resume":
     case "projects":
-      return "Projects";
+      return "Settings";
     case "shelf":
       return "Shelf";
     case "timers":

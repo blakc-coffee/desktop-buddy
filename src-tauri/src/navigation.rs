@@ -37,6 +37,7 @@ pub fn acknowledge_navigation(state: tauri::State<Navigation>, id: u64) -> Resul
     state.acknowledge(id)
 }
 pub fn open(app: tauri::AppHandle, destination: Destination) {
+    if !crate::features::destination_enabled(destination) { return; }
     if destination == Destination::Codex { chats(app); return; }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -80,6 +81,7 @@ mod tests {
 }
 
 pub fn chats(app:tauri::AppHandle) {
+    if !crate::features::CODEX_CHATS { return; }
     let handle=app.clone();
     let _=app.run_on_main_thread(move || {
         let window=if let Some(window)=handle.get_webview_window("chats") {Ok(window)} else {

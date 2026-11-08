@@ -2,7 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import Todo from "./Todo";
-import Chats from "./Chats";
+// Chats remains archived in Chats.tsx.
 import Explanation from "./Explanation";
 import "./style.css";
 createRoot(document.getElementById("root")!).render(
@@ -15,7 +15,7 @@ createRoot(document.getElementById("root")!).render(
       "explanation" ? (
       <Explanation />
     ) : (
-      new URLSearchParams(location.search).get("surface") === "chats" ? <Chats /> : <App />
+      <App />
     )}
   </React.StrictMode>,
 );

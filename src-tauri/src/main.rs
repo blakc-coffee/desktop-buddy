@@ -2,6 +2,7 @@
 mod agents;
 mod bar;
 mod commands;
+mod features;
 mod drop_data;
 mod finder;
 mod model;
@@ -573,6 +574,7 @@ fn spawn_cli(path: &Path, args: &[&str]) -> Result<std::process::Child, String> 
 }
 #[tauri::command]
 async fn codex_sessions(core: tauri::State<'_, Shared>) -> Result<serde_json::Value, String> {
+    features::require_codex_chats()?;
     let owned = core.inner().clone();
     codex_read(owned,"thread/list",serde_json::json!({"limit":25,"useStateDbOnly":true,"sourceKinds":["cli","vscode","appServer"],"sortKey":"updated_at"})).await
 }

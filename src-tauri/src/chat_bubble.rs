@@ -87,6 +87,7 @@ pub async fn kitty_chats(
     core: tauri::State<'_, Shared>,
     cursor: Option<String>,
 ) -> Result<Value, String> {
+    crate::features::require_codex_chats()?;
     let params = json!({"limit":25,"cursor":cursor,"sortKey":"recency_at","useStateDbOnly":true,"sourceKinds":["cli","vscode","appServer"]});
     let probe_params = params.clone();
     let shared = tauri::async_runtime::spawn_blocking(move || {
@@ -112,6 +113,7 @@ fn can_message(status: &Value) -> bool {
 }
 #[tauri::command]
 pub async fn kitty_chat_send(thread_id: String, message: String) -> Result<Value, String> {
+    crate::features::require_codex_chats()?;
     if thread_id.is_empty()
         || thread_id.len() > 128
         || message.trim().is_empty()

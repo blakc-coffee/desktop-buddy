@@ -104,12 +104,11 @@ export default function Explanation() {
         <h1>{result?.title || "Explanation"}</h1>
       </header>
       {error && <p role="alert">{error}</p>}
-      {result?.question && <p className="quick-question">{result.question}</p>}
+
       {result?.error && <p role="alert">{result.error}</p>}
       {result?.busy && (
-        <div className="screen-status" role="status">
+        <div className="screen-status" role="status" aria-label="Thinking">
           <span className="kitty-thinking" aria-hidden="true"><i /><i /><i /></span>
-          <span>Asking your AI…</span>
           <button
             className="small-button"
             onClick={() =>
@@ -148,7 +147,7 @@ export default function Explanation() {
       ) : !result?.busy && !result?.error ? (
         <p>No explanation yet. Use /exp to capture and explain your screen.</p>
       ) : null}
-      <footer className="bubble-source">Via Codex · Uses your signed-in account allowance</footer>
+
       <p className="copy-status" role="status">
         {copied}
       </p>

@@ -1,3 +1,4 @@
+import { features, pageEnabled } from "./features";
 import {
   useEffect,
   useRef,
@@ -222,6 +223,7 @@ export default function App() {
     draft: { title, minutes, due, projectPath, note, edit },
   };
   function setPage(nextPage: Page, taskTab?: string, focusHeader = true) {
+    if (!pageEnabled(nextPage)) return;
     const current = formScope.current;
     const key = (value: Page, tab: string) =>
       value === "Tasks" ? value + ":" + tab : value;
@@ -286,7 +288,7 @@ export default function App() {
     if (
       !data ||
       !navigation ||
-      ["ask", "codex", "screenCapture", "screenExplain"].includes(
+      ["screenCapture", "screenExplain", ...(features.codexChats ? ["ask", "codex"] : [])].includes(
         navigation.destination,
       )
     )
@@ -614,7 +616,7 @@ export default function App() {
               "Fill",
               "Music",
             ] as Page[]
-          ).map((p) => (
+          ).filter(pageEnabled).map((p) => (
             <button
               key={p}
               aria-current={page === p ? "page" : undefined}
@@ -749,7 +751,7 @@ export default function App() {
                   </Suspense>
                 )}
               </div>
-              <div hidden={page !== "Codex"} className="page-pane codex-pane">
+              {features.codexChats && <div hidden={page !== "Codex"} className="page-pane codex-pane">
                 <Suspense
                   fallback={
                     <p className="explanation">Loading Codex workspace...</p>
@@ -824,10 +826,10 @@ export default function App() {
                     </p>
                   </section>
                 </details>
-              </div>
+              </div>}
               {page === "Activity" && (
                 <>
-                  {(data.agentAttention || 0) > 0 && (
+                  {features.codexChats && (data.agentAttention || 0) > 0 && (
                     <div className="attention-banner">
                       <div>
                         <strong>Codex needs your attention</strong>
@@ -929,7 +931,7 @@ export default function App() {
                       </p>
                     )}
                   </section>
-                  <section className="overview-projects">
+                  {features.workspaces && <section className="overview-projects">
                     <div className="section-heading">
                       <h2>Continue a project</h2>
                       <button
@@ -963,7 +965,7 @@ export default function App() {
                         Save a folder in Projects to keep its next step close.
                       </p>
                     )}
-                  </section>
+                  </section>}
                 </>
               )}
               {page === "Tasks" && (

@@ -25,8 +25,6 @@ Quit an older Buddy instance from its tray menu before launching a newer executa
 | `/r 10m stretch` | Set a reminder for 10 minutes from now |
 | `/w my project` | Find a saved workspace and open it in Cursor or Explorer |
 | `/pet` | Choose a pet and apply its launcher theme |
-| `/codex` | Recent local chats in Kitty’s scrollable bubble; live messaging requires a shared Codex connection |
-| `/resume` | Pick up a saved project in Activity |
 | `/tools` | Open the detailed tools window |
 | `/copy` | Copy the file references currently held by the pet |
 
@@ -97,7 +95,7 @@ cargo test --release --manifest-path src-tauri/Cargo.toml -j 2
 
 ## Screen helper
 
-Type `/exp your question` to capture the current display after three seconds and answer your question in a speech bubble beside Kitty, with loading dots and nerdy glasses. The tools window stays closed. Type `/sc your question` to fill one supported accessible text field or select a radio/checkbox quiz option. Put the intended app in front during the countdown. No suitable control means Kitty gives an attention animation and changes nothing. Submit buttons and password fields are excluded. Custom canvas controls may not expose the Windows accessibility support required for filling.
+Type `/exp your question` to capture the current display after a brief focus-settle delay and answer your question in a speech bubble beside Kitty, with loading dots and nerdy glasses. The tools window stays closed. Type `/sc your question` to fill one supported accessible text field or select a radio/checkbox quiz option. Keep the intended app in front when invoking the command. No suitable control means Kitty gives an attention animation and changes nothing. Submit buttons and password fields are excluded. Custom canvas controls may not expose the Windows accessibility support required for filling.
 
 Plain text asks your signed-in Codex account for a quick answer. The command picker suggests 10 everyday actions; `/tools` opens management/settings. `/codex` lists recent local chats. Source-reported running/idle states and explicit follow-ups require a live shared app-server connection; this desktop installation did not expose that connection during verification, so Kitty displays unavailable status and disables sending. See [speech-bubble behavior, connection and limits](docs/kitty-bubbles-0.4.md).
 
@@ -105,3 +103,10 @@ Plain text asks your signed-in Codex account for a quick answer. The command pic
 ## Quick AI answers
 
 Plain text in the native pet command bar now asks your signed-in Codex AI when you press Enter. Replies appear in a small window beside the pet. Use `/d task` for Todos and `/f name` for file search. See [connection behavior and checks](docs/quick-answers-and-pet-polish-0.4.md).
+
+
+### Current release: quiet screen commands
+
+`/sc` closes the command bar on the first Enter and works silently, using only Kitty’s animations for feedback. `/exp question` returns a short answer in the pet bubble without connection/provider chatter. Command captures wait 100 ms for focus to settle; `/exp` skips control scanning. Manual capture/review retains its three-second countdown. Eight everyday commands remain: `/sc`, `/exp`, `/t`, `/r`, `/d`, `/todos`, `/f`, `/tools`.
+
+Codex chats and workspace/project features are archived and inaccessible in this release; their implementations and saved data are kept for later. This supersedes older feature descriptions above. Screen explanations and quick answers still use the signed-in Codex CLI. See [release behavior and verification](docs/silent-screen-and-archived-features-0.4.md).

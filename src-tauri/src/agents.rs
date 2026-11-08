@@ -911,6 +911,7 @@ pub fn agent_start(
     acknowledge_unknown: bool,
     context: Option<TaskContextRequest>,
 ) -> Result<String, String> {
+    crate::features::require_codex_chats()?;
     if prompt.trim().is_empty()
         || prompt.len() > 8192
         || model.trim().is_empty()

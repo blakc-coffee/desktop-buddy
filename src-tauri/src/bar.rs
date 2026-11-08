@@ -235,7 +235,7 @@ unsafe fn refresh() {
         Ok(Parsed::Help) => {
             choices(vec![]);
             if text.trim().eq_ignore_ascii_case("/help") {
-                note("/t /d /r /f /w /pet");
+                note("/sc /exp /t /d /r /f /todos /tools");
             }
         }
         Ok(Parsed::Find(q)) => {
@@ -431,6 +431,12 @@ unsafe fn execute() {
     }) else {
         return;
     };
+    // Screen commands execute on the first Enter, even while a completion row is selected.
+    if let Ok(Parsed::Screen { question, fill }) = commands::parse(&contents()) {
+        hide();
+        crate::screen_helper::run_command(app, question, fill);
+        return;
+    }
     let Some(action) = action else {
         if let Err(error) = commands::parse(&contents()) {
             note(&error);

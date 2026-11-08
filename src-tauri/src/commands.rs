@@ -66,17 +66,15 @@ pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 10] {
+pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 8] {
     [
         (&["/sc", "/screen", "/fill"], "/sc question · Capture and fill", "/sc "),
         (&["/exp", "/explain"], "/exp question · Explain screen", "/exp "),
-        (&["/codex"], "/codex · Recent chats", "/codex"),
         (&["/t", "/timer", "/focus"], "/t 25m task · Timer", "/t "),
         (&["/r", "/remind"], "/r 10m message · Reminder", "/r "),
         (&["/d", "/todo"], "/d task · Add todo", "/d "),
         (&["/todos"], "/todos · Checklist", "/todos"),
         (&["/f", "/find"], "/f name · Find files", "/f "),
-        (&["/w", "/workspace"], "/w name · Open workspace", "/w "),
         (&["/tools", "/settings"], "/tools · Manage tools and settings", "/tools"),
     ]
 }
@@ -101,15 +99,16 @@ pub fn parse(text: &str) -> Result<Command, String> {
 
         "/tools" | "/actions" if args.is_empty() => Ok(Command::Tools),
 
+        "/codex" | "/ask" | "/resume" | "/projects" | "/w" | "/workspace" => Err("This feature is archived for now.".into()),
         "/sc" | "/screen" | "/fill" => Ok(Command::Screen { question: args.into(), fill: true }),
         "/exp" | "/explain" => Ok(Command::Screen { question: args.into(), fill: false }),
-        "/codex" if args.is_empty() => Ok(Command::Panel(Destination::Codex)),
 
-        "/ask" if args.is_empty() => Ok(Command::Panel(Destination::Ask)),
 
-        "/resume" if args.is_empty() => Ok(Command::Panel(Destination::Resume)),
 
-        "/projects" if args.is_empty() => Ok(Command::Panel(Destination::Projects)),
+
+
+
+
 
         "/shelf" if args.is_empty() => Ok(Command::Panel(Destination::Shelf)),
 
@@ -133,7 +132,7 @@ pub fn parse(text: &str) -> Result<Command, String> {
 
         "/f" | "/find" => Ok(Command::Find(args.into())),
 
-        "/w" | "/workspace" => Ok(Command::Workspaces(args.into())),
+
 
         "/d" | "/todo" if !args.is_empty() && args.len() <= 240 => Ok(Command::Todo(args.into())),
 
@@ -188,15 +187,15 @@ mod tests {
     #[test]
 
     fn autocomplete_browses_empty_input_and_leaves_arguments_alone() {
-        assert_eq!(suggestions("").len(), 10);
+        assert_eq!(suggestions("").len(), 8);
 
-        assert_eq!(parse("/resume"), Ok(Command::Panel(Destination::Resume)));
+        assert!(parse("/resume").is_err());
 
         assert!(suggestions("/copy").is_empty());
 
         assert_eq!(parse("/sc"), Ok(Command::Screen { question: String::new(), fill: true }));
         assert_eq!(parse("/exp"), Ok(Command::Screen { question: String::new(), fill: false }));
-        assert_eq!(parse("/codex"), Ok(Command::Panel(Destination::Codex)));
+        assert!(parse("/codex").is_err());
 
         assert_eq!(suggestions("/too").len(), 1);
 
@@ -219,7 +218,7 @@ mod tests {
                 assert!(parse(completion).is_ok(), "{completion}");
             }
         }
-        assert_eq!(parse("/ask"), Ok(Command::Panel(Destination::Ask)));
+        assert!(parse("/ask").is_err());
         assert_eq!(parse("/todos"), Ok(Command::Todos));
         assert_eq!(parse("/held"), Ok(Command::Held));
         assert!(parse("/s").is_err());
@@ -235,10 +234,7 @@ mod tests {
 
         assert!(parse("/t 25m task; calc.exe").is_ok());
 
-        assert_eq!(
-            parse("/w demo").unwrap(),
-            Command::Workspaces("demo".into())
-        );
+        assert!(parse("/w demo").is_err());
     }
 
     #[test]
