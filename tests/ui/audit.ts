@@ -30,7 +30,7 @@ try {
         "Projects",
         "Shelf",
         "Codex",
-        "Browser helper",
+        "Screen helper",
         "Music",
         "Settings",
       ]) {

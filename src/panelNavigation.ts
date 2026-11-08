@@ -1,5 +1,7 @@
 export type PanelDestination =
   | "codex"
+  | "screenCapture"
+  | "screenExplain"
   | "fill"
   | "activity"
   | "ask"
@@ -16,6 +18,8 @@ export function destinationPage(destination: PanelDestination) {
     case "codex":
     case "ask":
       return "Codex";
+    case "screenCapture":
+    case "screenExplain":
     case "fill":
       return "Fill";
     case "resume":

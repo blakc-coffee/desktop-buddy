@@ -1,5 +1,7 @@
 # Toolbar, Todo and page helper — 8 November 2026
 
+Update: the primary helper is now screen-based. `/sc` captures and types a text answer; `/exp` captures and explains. `/fill` aliases `/sc`. The extension workflow described below remains optional inside Screen helper. See [current screen-helper instructions](screen-helper-0.4.md).
+
 The native toolbar remains empty on opening, with arrow/wheel command browsing in the input placeholder, Escape/outside-click dismissal, native editing/IME behavior, and expanded file results. It now has a separate, labelled Actions button (also F4), Segoe UI, consistent drawn result icons, larger result targets, and work-area-aware row limits. Actions groups common destinations, tasks/focus, files/projects, pet controls/motions, music, and detailed tools. Existing aliases remain; `/s` is not implemented.
 
 Direct destinations include `/ask`, `/resume`, `/fill`, `/todos`, `/timers`, `/reminders`, `/projects`, `/shelf`, `/held`, `/imports`, `/settings`, `/music`, and `/codex`. `/held` displays the current temporary pouch contents; `/shelf` opens persistent references; `/imports` opens the retained imported-file folder. Typed navigation requests survive first WebView startup. Generation-matched acknowledgements prevent an older request from consuming a newer one. Opening Ask never submits a prompt or loads model catalogs.
@@ -8,7 +10,7 @@ The pet's right-click menu contains exactly Open tools, Hide pet, Clear held ref
 
 ## Browser page helper
 
-`/fill` opens a real Chrome/Edge extension/native-host integration. The extension explicitly connects a chosen page for five minutes, without restarting the browser or using a debugging port. A page-specific permission and the extension/native host must be installed once. The release includes both executables, the extension and a per-user registration script; setup is described in `browser-helper/README.md`.
+The optional browser-fill section opens the Chrome/Edge extension/native-host integration. The extension explicitly connects a chosen page for five minutes, without restarting the browser or using a debugging port. A page-specific permission and the extension/native host must be installed once. The release includes both executables, the extension and a per-user registration script; setup is described in `browser-helper/README.md`.
 
 Workflow: connect page → capture questions → select fields/model → generate → review → fill. Generation uses the installed Codex CLI in ephemeral, read-only mode, with shell, browser, image, plugin and agent tools disabled. The answer JSON is validated against captured field identities and choices. Application is deterministic, checks original control/model values and document fingerprint, reads back results, and never clicks Submit or Run. DOM updates are not transactional: interference stops remaining writes and reports the verified count. Unknown Apply outcomes are never automatically replayed.
 

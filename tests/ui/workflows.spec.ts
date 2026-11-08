@@ -29,7 +29,7 @@ for (const theme of ["dark", "light"])
         "Projects",
         "Shelf",
         "Codex",
-        "Browser helper",
+        "Screen helper",
         "Music",
         "Settings",
       ]) {
@@ -343,4 +343,112 @@ test("empty data, loading recovery and reduced-motion compact layout", async ({
       .first()
       .evaluate((el) => getComputedStyle(el).transitionDuration),
   ).toBe("0s");
+});
+
+test("screen commands capture and explain or type once without browser connection", async ({
+  page,
+}) => {
+  await installFixture(page);
+  await page.goto("/");
+  await page
+    .getByText("Your focus session finished", { exact: true })
+    .waitFor();
+  await page.evaluate(() =>
+    (window as any).fixtureEmit("panel-navigation", {
+      id: 10,
+      destination: "screenExplain",
+    }),
+  );
+  await expect(
+    page.getByRole("img", {
+      name: "Captured display to review before explaining",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Load and select a model once to continue this command. Buddy remembers your choice.",
+    ),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Load models", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "Screen explanation", exact: true }),
+  ).toContainText("Two plus two is four");
+  await page.evaluate(() =>
+    (window as any).fixtureEmit("panel-navigation", {
+      id: 11,
+      destination: "screenCapture",
+    }),
+  );
+  await expect(
+    page.getByText(
+      "Answer text sent to the captured app. Check its field; Buddy has not submitted it.",
+    ),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).fixtureCalls
+          .filter((c: any) => c.command === "screen_explain")
+          .map((c: any) => c.args.fill),
+      ),
+    )
+    .toEqual([false, true]);
+  const calls = await page.evaluate(() =>
+    (window as any).fixtureCalls.map((c: any) => c.command),
+  );
+  expect(calls).not.toContain("browser_connections");
+  expect(calls).not.toContain("browser_apply");
+  await page
+    .getByRole("button", { name: "Clear capture", exact: true })
+    .click();
+  await expect(
+    page.getByRole("img", {
+      name: "Captured display to review before explaining",
+    }),
+  ).toHaveCount(0);
+});
+
+test("manual screen capture previews locally and recovers from capture failure", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 380, height: 800 });
+  await installFixture(page, "light");
+  await page.goto("/");
+  await go(page, "Screen helper");
+  await page.evaluate(() => {
+    (window as any).fixtureScreenFail = true;
+  });
+  await page
+    .getByRole("button", { name: "Capture screen", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Synthetic capture failed",
+  );
+  await page.evaluate(() => {
+    (window as any).fixtureScreenFail = false;
+  });
+  await page
+    .getByRole("button", { name: "Capture screen", exact: true })
+    .click();
+  await expect(
+    page.getByRole("img", {
+      name: "Captured display to review before explaining",
+    }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      (window as any).fixtureCalls.some(
+        (c: any) => c.command === "screen_explain",
+      ),
+    ),
+  ).toBe(false);
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
 });

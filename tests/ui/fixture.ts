@@ -141,6 +141,39 @@ export async function installFixture(
           return;
         }
         if (command === "agent_snapshot") return root.fixtureTasks;
+        if (command === "screen_capture") {
+          if (root.fixtureScreenFail)
+            throw Error("Synthetic capture failed. Try again.");
+          return {
+            id: "screen-fixture",
+            width: 800,
+            height: 300,
+            target: "Practice question - synthetic app",
+            preview:
+              "data:image/svg+xml;base64," +
+              btoa(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="300"><rect width="800" height="300" fill="#fff"/><text x="40" y="80" font-size="28" fill="#222">Practice question: What is 2 + 2?</text><text x="40" y="140" font-size="22" fill="#444">Explain your answer.</text></svg>',
+              ),
+          };
+        }
+        if (command === "screen_explain")
+          return {
+            explanation:
+              "Two plus two is four. Combine two pairs to get four items.",
+            answer: "4",
+            typed: !!args.fill,
+          };
+        if (command === "screen_clear" || command === "screen_cancel") return;
+        if (command === "codex_models")
+          return {
+            data: [
+              {
+                model: "fixture-vision",
+                displayName: "Fixture vision model",
+                isDefault: true,
+              },
+            ],
+          };
         if (command === "browser_connections") return [];
         if (command === "codex_sessions") return { data: [] };
         if (command === "set_theme") {

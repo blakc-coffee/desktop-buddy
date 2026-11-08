@@ -179,3 +179,8 @@ Overview contains actionable attention, the next checklist items and short proje
 Project creation, diagnostics and stored history use native disclosure controls. Important pending decisions and uncertain outcomes remain visible. Drafts survive navigation within the current window and stay isolated by form and project. Compact layouts expose every destination through a Tools menu rather than a clipped horizontal strip. Keyboard focus moves to the selected destination; native requests acknowledge only after their target is ready.
 
 See docs/ui-ux-review-2026-11.md for research, the council decision and verification limits.
+
+
+## Screen helper
+
+Screen helper replaces the browser-only primary destination. `/exp` captures and explains visible content in any app; `/sc` captures and types a text answer into the app active at capture time. The standalone Capture screen button retains a local preview before explicit explanation. Browser control remains optional under a disclosure. The UI names the target, explains the countdown and model sending behavior, and distinguishes sent text events from verified filling. See docs/screen-helper-0.4.md for limits and validation.

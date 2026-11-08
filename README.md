@@ -93,3 +93,10 @@ cargo test --release --manifest-path src-tauri/Cargo.toml -j 2
 ```
 
 `npm run dev` starts the browser preview server. Open the local URL it prints. Preview data is separate from the native app. For native troubleshooting, launch the executable with `--commands` to toggle the launcher, `--panel` to open the full tools window, or `--tray` to start in the tray. See the [0.4 build report](docs/build-report-0.4.md) for historical verification details.
+
+
+## Screen helper
+
+Type `/exp` in the pet command bar to capture and explain what is visible in any app. Type `/sc` to capture and automatically type a generated text answer into the app active at capture time. During the three-second countdown, focus the answer field and place your pointer on its display. Select a Codex image-capable model once; future commands reuse it. No browser extension is required for these commands.
+
+Text entry does not press Enter or submit. Radio/checkbox selection and protected input are not supported by general screen typing. See [screen-helper setup, behavior and limits](docs/screen-helper-0.4.md).

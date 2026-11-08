@@ -723,7 +723,7 @@ unsafe fn show_actions() {
             let _ = DestroyMenu(child);
         }
     }
-    for completion in ["/todos", "/ask", "/resume", "/fill"] {
+    for completion in ["/todos", "/ask", "/resume", "/sc", "/exp"] {
         command(menu, &mut actions, completion);
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);

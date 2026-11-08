@@ -21,7 +21,7 @@ import ProjectResume from "./ProjectResume";
 import TaskChecklist from "./TaskChecklist";
 import type { AgentTask } from "./AgentPanel";
 import { pageInfo, type Page } from "./uiNavigation";
-const BrowserFill = lazy(() => import("./BrowserFill"));
+const ScreenHelper = lazy(() => import("./ScreenHelper"));
 const AgentPanel = lazy(() => import("./AgentPanel"));
 type FormDraft = {
   title: string;
@@ -286,7 +286,9 @@ export default function App() {
     if (
       !data ||
       !navigation ||
-      ["ask", "codex"].includes(navigation.destination)
+      ["ask", "codex", "screenCapture", "screenExplain"].includes(
+        navigation.destination,
+      )
     )
       return;
     (navigation.destination === "resume"
@@ -739,7 +741,11 @@ export default function App() {
               <div hidden={page !== "Fill"} className="page-pane">
                 {(fillVisited || page === "Fill") && (
                   <Suspense fallback={<p>Loading page helper...</p>}>
-                    <BrowserFill />
+                    <ScreenHelper
+                      visible={page === "Fill"}
+                      navigation={navigation}
+                      onNavigated={acknowledgeNavigation}
+                    />
                   </Suspense>
                 )}
               </div>

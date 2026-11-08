@@ -5,6 +5,8 @@ pub enum Destination {
     Activity,
     Codex,
     Fill,
+    ScreenCapture,
+    ScreenExplain,
     Ask,
     Resume,
     Projects,
@@ -61,13 +63,14 @@ pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 20] {
+pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 21] {
     [
         (
-            &["/fill"][..],
-            "/fill \u{b7} Fill current browser page",
-            "/fill",
+            &["/sc", "/screen", "/fill"][..],
+            "/sc \u{b7} Capture screen and fill answer",
+            "/sc",
         ),
+        (&["/exp", "/explain"][..], "/exp · Explain what is on screen", "/exp"),
         (&["/t", "/timer", "/focus"][..], "/t 25m · Timer", "/t "),
         (
             &["/f", "/find"][..],
@@ -132,7 +135,8 @@ pub fn parse(text: &str) -> Result<Command, String> {
 
         "/tools" | "/actions" if args.is_empty() => Ok(Command::Tools),
 
-        "/fill" if args.is_empty() => Ok(Command::Panel(Destination::Fill)),
+        "/sc" | "/screen" | "/fill" if args.is_empty() => Ok(Command::Panel(Destination::ScreenCapture)),
+        "/exp" | "/explain" if args.is_empty() => Ok(Command::Panel(Destination::ScreenExplain)),
         "/codex" if args.is_empty() => Ok(Command::Panel(Destination::Codex)),
 
         "/ask" if args.is_empty() => Ok(Command::Panel(Destination::Ask)),
@@ -218,12 +222,14 @@ mod tests {
     #[test]
 
     fn autocomplete_browses_empty_input_and_leaves_arguments_alone() {
-        assert_eq!(suggestions("").len(), 20);
+        assert_eq!(suggestions("").len(), 21);
 
         assert_eq!(parse("/resume"), Ok(Command::Panel(Destination::Resume)));
 
         assert!(suggestions("/copy").is_empty());
 
+        assert_eq!(parse("/sc"), Ok(Command::Panel(Destination::ScreenCapture)));
+        assert_eq!(parse("/exp"), Ok(Command::Panel(Destination::ScreenExplain)));
         assert_eq!(parse("/codex"), Ok(Command::Panel(Destination::Codex)));
 
         assert_eq!(suggestions("/too").len(), 0);

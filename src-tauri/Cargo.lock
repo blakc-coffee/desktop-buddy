@@ -738,6 +738,7 @@ name = "desktop-buddy"
 version = "0.4.0"
 dependencies = [
  "base64 0.21.7",
+ "png",
  "rusqlite",
  "serde",
  "serde_json",

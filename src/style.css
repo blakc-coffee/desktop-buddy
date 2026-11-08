@@ -1908,3 +1908,82 @@ body:has(.todo-window) {
     transition: none;
   }
 }
+.screen-helper {
+  display: grid;
+  gap: 20px;
+}
+.screen-capture-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.screen-capture-intro p {
+  margin: 8px 0 0;
+}
+.screen-helper .muted,
+.screen-preview figcaption {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.screen-helper p {
+  margin-top: 0;
+}
+.screen-preview {
+  margin: 0;
+}
+.screen-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 440px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 8px;
+}
+.screen-preview figcaption {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.screen-question {
+  display: grid;
+  gap: 8px;
+}
+.screen-models,
+.screen-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.screen-models label {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 160px;
+}
+.screen-answer {
+  border-top: 1px solid var(--border);
+  padding-top: 24px;
+}
+.screen-answer-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+.screen-browser-options {
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+.screen-browser-options > summary {
+  cursor: pointer;
+  min-height: 40px;
+}
+@media (max-width: 560px) {
+  .screen-capture-intro {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

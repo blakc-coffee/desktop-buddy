@@ -8,6 +8,7 @@ mod model;
 mod navigation;
 mod browser_protocol;
 mod browser_fill;
+mod screen_helper;
 mod menu_theme;
 mod pet;
 mod pet_art;
@@ -744,6 +745,7 @@ fn main() {
     tauri::Builder::default()
         .manage(navigation::Navigation::default())
         .manage(Arc::new(browser_fill::BrowserState::default()))
+        .manage(Arc::new(screen_helper::ScreenState::default()))
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|a| a == "--quit") {
                 request_quit(app)
@@ -777,6 +779,10 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            screen_helper::screen_capture,
+            screen_helper::screen_explain,
+            screen_helper::screen_clear,
+            screen_helper::screen_cancel,
             browser_fill::browser_helper_files,
             browser_fill::browser_connections,
             browser_fill::browser_capture,

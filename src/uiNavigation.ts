@@ -32,9 +32,9 @@ export const pageInfo: Record<Page, { title: string; description: string }> = {
       "Start a request, review decisions and return to your task receipts.",
   },
   Fill: {
-    title: "Browser helper",
+    title: "Screen helper",
     description:
-      "Capture a connected page, review proposed answers, then fill.",
+      "Capture any app, review the image and ask for an explanation.",
   },
   Music: {
     title: "Music",
