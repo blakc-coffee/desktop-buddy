@@ -523,36 +523,15 @@ test("compact explanation displays code and answer with accessible copy actions"
   ).toBe(false);
 });
 
-test("quick answer shows a question, progress and cancel result", async ({
-  page,
-}) => {
+test("loading stays on Kitty and the bubble appears only with a ready answer", async ({page})=>{
   await installFixture(page);
-  await page.addInitScript(() => {
-    (window as any).fixtureScreenResult = {
-      title: "Quick answer",
-      question: "What is a binary tree?",
-      busy: true,
-    };
-  });
+  await page.addInitScript(()=>{(window as any).fixtureScreenResult={title:"Explanation",busy:true};});
   await page.goto("/?surface=explanation");
-  await expect(
-    page.getByRole("heading", { name: "Quick answer", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("What is a binary tree?", { exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("status", { name: "Thinking", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveText("Question cancelled.");
-  await expect(
-    page.getByRole("button", { name: "Cancel", exact: true }),
-  ).toHaveCount(0);
-  const results = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
-    .analyze();
-  expect(results.violations).toEqual([]);
+  await expect(page.locator(".explanation-bubble")).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="bubble_present").length)).toBe(0);
+  await page.evaluate(()=>{(window as any).fixtureScreenResult={title:"Explanation",explanation:"A short ready answer."};(window as any).fixtureEmit("screen-result",null);});
+  await expect(page.getByText("A short ready answer.",{exact:true})).toBeVisible();
+  await expect(page.locator(".kitty-thinking")).toHaveCount(0);
 });
 
 
@@ -588,4 +567,17 @@ test("archived entry points stay inaccessible and explanations have no connectio
   await expect(page.getByText(/Via Codex|account allowance|Asking your AI|What is this\?/)).toHaveCount(0);
   await expect(page.locator("header").getByRole("button",{name:"Copy explanation",exact:true})).toBeVisible();
   await expect(page.getByRole("button",{name:"Copy explanation",exact:true})).toHaveCount(1);
+});
+
+test("compact bubble scrolls long answers, sends follow-ups, and dismisses outside clicks",async({page})=>{
+  await page.setViewportSize({width:380,height:600});await installFixture(page,"light");
+  await page.addInitScript(()=>{(window as any).fixtureScreenResult={title:"Explanation",explanation:"Useful explanation. ".repeat(160)};});
+  await page.goto("/?surface=explanation");await page.getByLabel("Follow-up question").waitFor();
+  const size=await page.locator(".explanation-bubble").boundingBox();expect(size!.height).toBeLessThanOrEqual(337);
+  expect(await page.locator(".bubble-answer").evaluate(e=>e.scrollHeight>e.clientHeight)).toBe(true);
+  await page.getByLabel("Follow-up question").fill("Explain with an example");await page.getByRole("button",{name:"Send follow-up",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="bubble_followup").length)).toBe(1);
+  await page.mouse.click(1,1);
+  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="plugin:window|close").length)).toBeGreaterThan(0);
+  const results=await new AxeBuilder({page}).withTags(["wcag2a","wcag2aa","wcag21aa","wcag22aa"]).analyze();expect(results.violations).toEqual([]);
 });

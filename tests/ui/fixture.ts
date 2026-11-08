@@ -118,6 +118,9 @@ export async function installFixture(
             ).length,
             petAppearance: "calico",
           };
+        if (command === "plugin:window|close") return null;
+        if (command === "bubble_followup") return null;
+        if (command === "bubble_present") return {side:"left",tail:50};
         if (command === "kitty_chats") return root.fixtureChats || {data:[],live:false};
         if (command === "kitty_chat_send") return {accepted:true};
         if (command === "providers")

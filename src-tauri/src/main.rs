@@ -788,6 +788,8 @@ fn main() {
             screen_helper::screen_capture,
             screen_helper::quick_answer,
             screen_helper::screen_result,
+            screen_helper::bubble_present,
+            screen_helper::bubble_followup,
             screen_helper::screen_explain,
             screen_helper::screen_clear,
             screen_helper::screen_cancel,

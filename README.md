@@ -110,3 +110,8 @@ Plain text in the native pet command bar now asks your signed-in Codex AI when y
 `/sc` closes the command bar on the first Enter and works silently, using only Kitty’s animations for feedback. `/exp question` returns a short answer in the pet bubble without connection/provider chatter. Command captures wait 100 ms for focus to settle; `/exp` skips control scanning. Manual capture/review retains its three-second countdown. Eight everyday commands remain: `/sc`, `/exp`, `/t`, `/r`, `/d`, `/todos`, `/f`, `/tools`.
 
 Codex chats and workspace/project features are archived and inaccessible in this release; their implementations and saved data are kept for later. This supersedes older feature descriptions above. Screen explanations and quick answers still use the signed-in Codex CLI. See [release behavior and verification](docs/silent-screen-and-archived-features-0.4.md).
+
+
+### Compact answers and follow-ups
+
+Answer bubbles now fit short replies and stay small for long replies, with a themed scrollbar and fixed header/follow-up controls. Outside clicks or Escape dismiss the bubble. Kitty animates during loading; the bubble appears only after an answer is ready. Type a follow-up at the bottom to continue from the previous answer and, for /exp, the original capture while it remains current. See [behavior and verification](docs/compact-answer-followups-0.4.md).

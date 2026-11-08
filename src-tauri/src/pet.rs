@@ -34,6 +34,9 @@ const REFRESH_INDICATORS: u32 = WM_APP + 20;
 const PLAY_CUE: u32 = WM_APP + 21;
 const HALO_REFRESH: u32 = WM_APP + 22;
 const EXPLAINING: u32 = WM_APP + 23;
+const THINKING: u32 = WM_APP + 24;
+const WATCH_BUBBLE: u32 = WM_APP + 25;
+const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
 const NOTICE_TIMER: usize = 4;
@@ -78,6 +81,10 @@ struct State {
     press: Option<(POINT, RECT, bool)>,
     hover: bool,
     explaining: bool,
+    thinking: Option<Instant>,
+    loading: bool,
+    bubble_window: Option<HWND>,
+    bubble_hook: Option<HHOOK>,
     appearance: Appearance,
     indicators: Indicators,
     motion_set: usize,
@@ -100,19 +107,43 @@ pub fn appearance() -> Appearance {
     with_state(|state| state.appearance).unwrap_or_default()
 }
 pub fn explanation_position(control: &Control) -> Option<(i32,i32,&'static str,i32)> {
+    explanation_position_for_size(control, 420, 480)
+}
+pub fn explanation_position_for_size(control: &Control, width: i32, height: i32) -> Option<(i32,i32,&'static str,i32)> {
     unsafe {
         let hwnd=HWND(control.hwnd.load(Ordering::Relaxed) as _);
         if hwnd.0.is_null() {return None;}
         let mut pet=RECT::default();GetWindowRect(hwnd,&mut pet).ok()?;
         let mut info=MONITORINFO{cbSize:std::mem::size_of::<MONITORINFO>() as u32,..Default::default()};
         if !GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mut info).as_bool(){return None;}
-        let scale=GetDpiForWindow(hwnd).max(96) as i32;let width=420*scale/96;let height=480*scale/96;let work=info.rcWork;
+        let scale=GetDpiForWindow(hwnd).max(96) as i32;let width=width*scale/96;let height=height.max(1)*scale/96;let work=info.rcWork;
         let right=pet.right+width+12<=work.right;
         let x=if right {pet.right+4}else{pet.left-width+16};
         let y=(pet.top+50*scale/96-height/2).clamp(work.top,(work.bottom-height).max(work.top));
         let tail=((pet.top+50*scale/96-y)*100/height).clamp(10,90);
         Some((x.clamp(work.left,(work.right-width).max(work.left)),y,if right {"left"} else {"right"},tail))
     }
+}
+
+pub fn thinking(app: &tauri::AppHandle, active: bool) { post_pet_value(app, THINKING, active as usize); }
+pub fn watch_bubble(app: &tauri::AppHandle, window: isize) { post_pet_value(app, WATCH_BUBBLE, window as usize); }
+fn post_pet_value(app: &tauri::AppHandle, message: u32, value: usize) {
+    if let Some(control)=app.try_state::<Arc<Control>>() {
+        let hwnd=HWND(control.hwnd.load(Ordering::Relaxed) as _);
+        if !hwnd.0.is_null() { unsafe {let _=PostMessageW(Some(hwnd),message,WPARAM(value),LPARAM(0));} }
+    }
+}
+fn outside_bubble(point: POINT, rect: RECT) -> bool { point.x < rect.left || point.x >= rect.right || point.y < rect.top || point.y >= rect.bottom }
+unsafe extern "system" fn bubble_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code>=0 && matches!(wp.0 as u32,WM_LBUTTONDOWN|WM_RBUTTONDOWN|WM_MBUTTONDOWN|WM_XBUTTONDOWN) {
+        let point=(*(lp.0 as *const MSLLHOOKSTRUCT)).pt;
+        STATE.with(|state| { if let Ok(state)=state.try_borrow() { if let Some(window)=state.as_ref().and_then(|state|state.bubble_window) {
+            let mut rect=RECT::default();
+            if IsWindowVisible(window).as_bool() && GetWindowRect(window,&mut rect).is_ok() && outside_bubble(point,rect) { let _=PostMessageW(Some(window),WM_CLOSE,WPARAM(0),LPARAM(0)); }
+        } } });
+    }
+    // Never consume the click: it still reaches the application beneath it.
+    CallNextHookEx(None,code,wp,lp)
 }
 
 pub fn explaining(app: &tauri::AppHandle, active: bool) {
@@ -910,7 +941,15 @@ unsafe fn paint(hwnd: HWND) {
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
     SetMapMode(dc, MM_TEXT);
-    pet_art::draw_pose_accessory(dc, appearance, hover, dpi, pose.unwrap_or_else(AnimationSet::neutral_still_pose), file_motion, awake, cue, with_state(|state| state.explaining).unwrap_or(false));
+    let (thinking, nerdy)=with_state(|state| (state.thinking, state.explaining || state.loading)).unwrap_or_default();
+    let mut pose=pose.unwrap_or_else(AnimationSet::neutral_still_pose);
+    if let Some(started)=thinking {
+        // A small glasses-and-head bob layers over the existing idle/held pose.
+        let wave=(started.elapsed().as_secs_f32()*3.5).sin();
+        pose.offset_y=pose.offset_y.saturating_add(if wave>0.45 {-1}else{0});
+        pose.rotation_deg=pose.rotation_deg.saturating_add((wave*2.0) as i8);
+    }
+    pet_art::draw_pose_accessory(dc, appearance, hover, dpi, pose, file_motion, awake || thinking.is_some(), cue, nerdy);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
     let font = if count > 0 || timer.is_some() || paw.is_some() || notice.is_some() {
@@ -959,6 +998,27 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let _ = PostMessageW(Some(hwnd), HALO_REFRESH, WPARAM(0), LPARAM(0));
             result
         }
+        WATCH_BUBBLE => {
+            with_state(|state| {
+                if let Some(hook)=state.bubble_hook.take() {let _=UnhookWindowsHookEx(hook);}
+                state.bubble_window=(wp.0!=0).then_some(HWND(wp.0 as _));
+                if state.bubble_window.is_some() {state.bubble_hook=SetWindowsHookExW(WH_MOUSE_LL,Some(bubble_mouse),GetModuleHandleW(None).ok().map(|module|HINSTANCE(module.0)),0).ok();}
+            }); LRESULT(0)
+        }
+        THINKING => {
+            let _=KillTimer(Some(hwnd),THINKING_TIMER);
+            with_state(|state| {
+                state.thinking=None;
+                state.loading=wp.0!=0;
+                if wp.0!=0 {
+                    state.explaining=true;
+                    let mut enabled=BOOL(1);
+                    let _=SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,Some((&mut enabled as *mut BOOL).cast()),SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
+                    if enabled.as_bool() {state.thinking=Some(Instant::now());let _=SetTimer(Some(hwnd),THINKING_TIMER,120,None);}
+                }
+            });let _=InvalidateRect(Some(hwnd),None,false);LRESULT(0)
+        }
+        WM_TIMER if wp.0 == THINKING_TIMER => { let _=InvalidateRect(Some(hwnd),None,false);LRESULT(0) }
         EXPLAINING => { with_state(|state| state.explaining = wp.0 != 0); let _ = InvalidateRect(Some(hwnd), None, false); LRESULT(0) }
         HALO_REFRESH => { refresh_file_cards(hwnd); LRESULT(0) }
         WM_PAINT => {
@@ -1292,6 +1352,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_DESTROY => {
+            with_state(|state| {if let Some(hook)=state.bubble_hook.take(){let _=UnhookWindowsHookEx(hook);}});
+            let _=KillTimer(Some(hwnd),THINKING_TIMER);
             crate::file_halo::clear();
             PostQuitMessage(0);
             LRESULT(0)
@@ -1344,6 +1406,10 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                     press: None,
                     hover: false,
                     explaining: false,
+                    thinking: None,
+                    loading: false,
+                    bubble_window: None,
+                    bubble_hook: None,
                     appearance,
                     motion_set: motion_setting(&app, appearance),
                     motion: None,
@@ -1545,6 +1611,11 @@ pub fn stop(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test] fn bubble_outside_click_edges_do_not_swallow_inside_clicks() {
+        let rect=RECT{left:100,top:100,right:400,bottom:300};
+        assert!(!outside_bubble(POINT{x:100,y:100},rect));assert!(!outside_bubble(POINT{x:399,y:299},rect));
+        assert!(outside_bubble(POINT{x:400,y:150},rect));assert!(outside_bubble(POINT{x:99,y:150},rect));
+    }
     #[test]
     fn old_imports_cannot_replace_a_newer_hold_or_reopen_a_cleared_batch() {
         let control = Control {

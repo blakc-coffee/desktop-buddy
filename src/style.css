@@ -2100,3 +2100,22 @@ html[data-tail="right"] .explanation-bubble::before { left: auto; right: 7px; tr
 .bubble-copy { position: absolute; right: 48px; top: 12px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
 .bubble-copy:hover { background: var(--surface); color: var(--text); }
 .bubble-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Ready answers use their intrinsic height; long content scrolls within the display. */
+.explanation-bubble { height: auto; max-height: calc(100vh - 24px); }
+.explanation-bubble .copy-status:empty { display: none; }
+
+.explanation-bubble { display: flex; flex-direction: column; max-height: min(336px, calc(100vh - 24px)); overflow: hidden; padding: 18px; }
+.explanation-bubble header { flex: none; margin-bottom: 12px; }
+.bubble-answer { min-height: 0; overflow: auto; padding-right: 5px; scrollbar-width: thin; scrollbar-color: var(--muted) transparent; }
+.bubble-answer::-webkit-scrollbar { width: 6px; height: 6px; }
+.bubble-answer::-webkit-scrollbar-track { background: transparent; }
+.bubble-answer::-webkit-scrollbar-thumb { background: var(--muted); border: 1px solid var(--bg); border-radius: 8px; }
+.bubble-answer::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.bubble-followup { flex: none; display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
+.bubble-followup input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; padding: 6px 2px; }
+.followup-send { display: grid; place-items: center; flex: none; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: var(--surface); color: var(--text); cursor: pointer; }
+.followup-send:disabled { opacity: .45; cursor: default; }
+.followup-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.bubble-answer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
