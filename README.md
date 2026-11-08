@@ -34,9 +34,9 @@ Timer and reminder commands accept 1–1440 whole minutes. The pet shows the rem
 
 ## Hand off files
 
-Drop up to 20 local files or folders onto the pet. The pet holds their references for **two minutes**. Drag the loaded pet to a compatible folder or app to request a copy, or use `/copy` and paste. Hold **Alt** while dragging to move the pet itself.
+Drop up to 20 local files or folders onto the pet. The pet holds their references until you clear them or complete a handoff. Drag the loaded pet to a compatible folder or app to request a copy, or use `/copy` and paste. Hold **Alt** while dragging to move the pet itself.
 
-A successful handoff clears the pet’s hold. A cancelled drag leaves it available until expiry. Clearing, expiry, and quitting discard Buddy’s references. Your source files stay in place.
+A successful handoff clears the pet’s hold. A cancelled drag leaves them held. Clearing and quitting discard Buddy’s references. Your source files stay in place.
 
 The pet’s right-click menu, paw list, tray options, and launcher text-edit menu follow the selected pet’s colors and font. Choose a pet or try a motion set from the right-click menu. Windows high-contrast settings use the system menu appearance.
 

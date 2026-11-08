@@ -1,8 +1,10 @@
+Update: held files now remain until cleared or handed off, with multiple-file labels around the pet. See [current behavior](file-cluster-and-screen-polish-0.4.md).
+
 # Toolbar, Todo and page helper — 8 November 2026
 
 Update: the primary helper is now screen-based. `/sc` captures and types a text answer; `/exp` captures and explains. `/fill` aliases `/sc`. The extension workflow described below remains optional inside Screen helper. See [current screen-helper instructions](screen-helper-0.4.md).
 
-The native toolbar remains empty on opening, with arrow/wheel command browsing in the input placeholder, Escape/outside-click dismissal, native editing/IME behavior, and expanded file results. It now has a separate, labelled Actions button (also F4), Segoe UI, consistent drawn result icons, larger result targets, and work-area-aware row limits. Actions groups common destinations, tasks/focus, files/projects, pet controls/motions, music, and detailed tools. Existing aliases remain; `/s` is not implemented.
+The native toolbar remains empty on opening, with arrow/wheel command browsing in the input placeholder, Escape/outside-click dismissal, native editing/IME behavior, and expanded file results. It has no Actions button. F4 retains the optional grouped tools menu. The toolbar uses Segoe UI, consistent drawn result icons, larger result targets and work-area-aware row limits. Existing aliases remain; `/s` is not implemented.
 
 Direct destinations include `/ask`, `/resume`, `/fill`, `/todos`, `/timers`, `/reminders`, `/projects`, `/shelf`, `/held`, `/imports`, `/settings`, `/music`, and `/codex`. `/held` displays the current temporary pouch contents; `/shelf` opens persistent references; `/imports` opens the retained imported-file folder. Typed navigation requests survive first WebView startup. Generation-matched acknowledgements prevent an older request from consuming a newer one. Opening Ask never submits a prompt or loads model catalogs.
 

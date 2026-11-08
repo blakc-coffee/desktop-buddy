@@ -452,3 +452,84 @@ test("manual screen capture previews locally and recovers from capture failure",
     ),
   ).toBe(false);
 });
+
+test("capture scope persists and blocked typing keeps a copyable answer", async ({
+  page,
+}) => {
+  await installFixture(page);
+  await page.goto("/");
+  await go(page, "Screen helper");
+  await page
+    .getByRole("combobox", { name: "Capture scope", exact: true })
+    .selectOption("area");
+  await page.evaluate(() => {
+    localStorage.setItem("buddy-screen-model", "fixture-vision");
+    (window as any).fixtureTypingError = "Typing blocked. The answer was kept.";
+  });
+  await page.reload();
+  await page
+    .getByText("Your focus session finished", { exact: true })
+    .waitFor();
+  await page.evaluate(() => {
+    (window as any).fixtureTypingError = "Typing blocked. The answer was kept.";
+  });
+  await page.evaluate(() =>
+    (window as any).fixtureEmit("panel-navigation", {
+      id: 20,
+      destination: "screenCapture",
+    }),
+  );
+  await expect(page.getByRole("alert")).toContainText("Typing blocked");
+  await expect(
+    page.getByRole("heading", { name: "Generated answer", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Copy answer", exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as any).fixtureCalls.find(
+          (c: any) => c.command === "screen_capture",
+        ).args.scope,
+    ),
+  ).toBe("area");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as any).fixtureCalls.filter(
+          (c: any) => c.command === "screen_explain",
+        ).length,
+    ),
+  ).toBe(1);
+});
+
+test("compact explanation displays code and answer with accessible copy actions", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await installFixture(page, "light");
+  await page.addInitScript(() => {
+    (window as any).fixtureScreenResult = {
+      explanation: "Add the two values.\n```python\nprint(2 + 2)\n```",
+      answer: "4",
+    };
+  });
+  await page.goto("/?surface=explanation");
+  await expect(
+    page.getByRole("heading", { name: "Explanation", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("pre code")).toContainText("print(2 + 2)");
+  await expect(
+    page.getByRole("button", { name: "Copy answer", exact: true }),
+  ).toBeVisible();
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+});

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useEffect, useRef } from "react";
+import { ResultText } from "./Explanation";
 import type { PanelRequest } from "./panelNavigation";
 import { call, native } from "./bridge";
 const BrowserFill = lazy(() => import("./BrowserFill"));
@@ -34,6 +35,11 @@ export default function ScreenHelper({
   const [typed, setTyped] = useState(false);
   const seen = useRef(0);
   const [answer, setAnswer] = useState("");
+  const [answerText, setAnswerText] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [scope, setScope] = useState(
+    () => localStorage.getItem("buddy-screen-scope") || "display",
+  );
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [browser, setBrowser] = useState(false);
@@ -56,8 +62,10 @@ export default function ScreenHelper({
     setTyped(false);
     setCapture(null);
     setAnswer("");
+    setAnswerText("");
+    setCopied(false);
     const result = await run("Capturing in 3 seconds…", () =>
-      call<Capture>("screen_capture"),
+      call<Capture>("screen_capture", { scope }),
     );
     if (result) {
       setCapture(result);
@@ -76,22 +84,27 @@ export default function ScreenHelper({
       );
     }
   }
-  async function explain(fill = false) {
+  async function explain(fill = false, compact = false) {
     if (!capture) return;
     setAnswer("");
     const result = await run("Explaining your capture…", () =>
-      call<{ explanation: string; typed?: boolean; typingError?: string }>(
-        "screen_explain",
-        {
-          captureId: capture.id,
-          question,
-          model,
-          fill,
-        },
-      ),
+      call<{
+        explanation: string;
+        answer?: string;
+        typed?: boolean;
+        typingError?: string;
+      }>("screen_explain", {
+        captureId: capture.id,
+        question,
+        model,
+        fill,
+        compact,
+      }),
     );
     if (result) {
       setAnswer(result.explanation);
+      setAnswerText(result.answer || "");
+      setCopied(false);
       setTyped(!!result.typed);
       if (result.typingError) setError(result.typingError);
     }
@@ -105,9 +118,13 @@ export default function ScreenHelper({
       setPending(null);
       setCapture(null);
       setAnswer("");
+      setAnswerText("");
       setTyped(false);
     }
   }
+  useEffect(() => {
+    localStorage.setItem("buddy-screen-scope", scope);
+  }, [scope]);
   useEffect(() => {
     if (model) localStorage.setItem("buddy-screen-model", model);
   }, [model]);
@@ -130,7 +147,7 @@ export default function ScreenHelper({
     if (pending && capture && model && !busy) {
       const mode = pending;
       setPending(null);
-      void explain(mode === "fill");
+      void explain(mode === "fill", mode === "explain");
     }
   }, [pending, capture, model, busy]);
   return (
@@ -148,6 +165,18 @@ export default function ScreenHelper({
           {capture ? "Capture again" : "Capture screen"}
         </button>
       </div>
+      <label className="capture-scope">
+        Capture scope
+        <select
+          value={scope}
+          disabled={!!busy}
+          onChange={(event) => setScope(event.target.value)}
+        >
+          <option value="display">Full display</option>
+          <option value="window">Active window area</option>
+          <option value="area">Choose an area</option>
+        </select>
+      </label>
       <p className="muted">
         Buddy hides for 3 seconds. Show the content you want and move your
         pointer onto its display. Capture screen lets you preview first. /exp
@@ -263,6 +292,26 @@ export default function ScreenHelper({
           </div>
         </>
       )}
+      {answerText && (
+        <section className="recoverable-answer">
+          <div className="section-heading">
+            <h2>Generated answer</h2>
+            <button
+              className="small-button"
+              onClick={() =>
+                void navigator.clipboard
+                  .writeText(answerText)
+                  .then(() => setCopied(true))
+                  .catch((error) => setError(String(error)))
+              }
+            >
+              Copy answer
+            </button>
+          </div>
+          <pre>{answerText}</pre>
+          {copied && <p role="status">Answer copied</p>}
+        </section>
+      )}
       {typed && (
         <p role="status">
           Answer text sent to the captured app. Check its field; Buddy has not
@@ -284,7 +333,7 @@ export default function ScreenHelper({
               Copy explanation
             </button>
           </div>
-          <div className="screen-answer-text">{answer}</div>
+          <ResultText text={answer} />
         </section>
       )}
       <details

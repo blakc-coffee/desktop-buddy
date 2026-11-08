@@ -9,8 +9,10 @@ mod navigation;
 mod browser_protocol;
 mod browser_fill;
 mod screen_helper;
+mod screen_region;
 mod menu_theme;
 mod pet;
+mod file_halo;
 mod pet_art;
 use model::*;
 use rusqlite::{params, Connection};
@@ -780,6 +782,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             screen_helper::screen_capture,
+            screen_helper::screen_result,
             screen_helper::screen_explain,
             screen_helper::screen_clear,
             screen_helper::screen_cancel,

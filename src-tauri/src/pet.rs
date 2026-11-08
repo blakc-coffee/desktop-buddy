@@ -32,11 +32,11 @@ const APPEARANCE: u32 = WM_APP + 18;
 const PREVIEW: u32 = WM_APP + 19;
 const REFRESH_INDICATORS: u32 = WM_APP + 20;
 const PLAY_CUE: u32 = WM_APP + 21;
+const HALO_REFRESH: u32 = WM_APP + 22;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
 const NOTICE_TIMER: usize = 4;
 pub const APPEARANCES: [Appearance; 3] = [Appearance::Calico, Appearance::Dog, Appearance::Panda];
-const HOLD_SECS: u64 = 120;
 const WIDTH: i32 = 128;
 const HEIGHT: i32 = 136;
 #[derive(Clone, Default, Serialize)]
@@ -73,7 +73,7 @@ struct State {
     app: tauri::AppHandle,
     control: Arc<Control>,
     files: Vec<PathBuf>,
-    deadline: Option<Instant>,
+    hold_generation: u64,
     press: Option<(POINT, RECT, bool)>,
     hover: bool,
     appearance: Appearance,
@@ -91,11 +91,23 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
     STATE.with(|s| s.borrow_mut().as_mut().map(f))
 }
 pub(crate) unsafe fn held_paths() -> Vec<PathBuf> {
-    if let Some(hwnd) = with_state(|state| HWND(state.control.hwnd.load(Ordering::Relaxed) as _)) { expire(hwnd); }
+    if let Some(hwnd) = with_state(|state| HWND(state.control.hwnd.load(Ordering::Relaxed) as _)) { refresh_hold(hwnd); }
     with_state(|state| state.files.clone()).unwrap_or_default()
 }
 pub fn appearance() -> Appearance {
     with_state(|state| state.appearance).unwrap_or_default()
+}
+pub fn explanation_position(control: &Control) -> Option<(i32,i32)> {
+    unsafe {
+        let hwnd=HWND(control.hwnd.load(Ordering::Relaxed) as _);
+        if hwnd.0.is_null() {return None;}
+        let mut pet=RECT::default();GetWindowRect(hwnd,&mut pet).ok()?;
+        let mut info=MONITORINFO{cbSize:std::mem::size_of::<MONITORINFO>() as u32,..Default::default()};
+        if !GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mut info).as_bool(){return None;}
+        let scale=GetDpiForWindow(hwnd).max(96) as i32;let width=440*scale/96;let height=520*scale/96;let work=info.rcWork;
+        let x=if pet.right+width+12<=work.right {pet.right+12}else{pet.left-width-12};
+        Some((x.clamp(work.left,(work.right-width).max(work.left)),(pet.top-height/2).clamp(work.top,(work.bottom-height).max(work.top))))
+    }
 }
 
 pub fn set_appearance(app: &tauri::AppHandle, appearance: Appearance) {
@@ -178,19 +190,18 @@ fn seconds(deadline: Option<Instant>) -> u64 {
 fn publish(state: &State) {
     if let Ok(mut status) = state.control.status.lock() {
         status.count = state.files.len();
-        status.seconds_left = seconds(state.deadline);
+        status.seconds_left = 0;
     }
 }
 unsafe fn hold(hwnd: HWND, state: &mut State, files: Vec<PathBuf>) {
     state.drop_notice = None;
     let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
     state.files = files;
-    state.deadline = Some(Instant::now() + Duration::from_secs(HOLD_SECS));
-    SetTimer(Some(hwnd), 1, 1000, None);
+    state.hold_generation = state.hold_generation.wrapping_add(1);
     advance_motion(hwnd, state, Some((AnimationPhase::Pickup, 0, false)));
     if let Ok(mut status) = state.control.status.lock() {
         status.message =
-            "Files held for 120 seconds. Drag to copy out, or use Copy held files.".into();
+            "Files held until you clear or hand them off. Drag to copy out, or use /copy.".into();
     }
     publish(state);
 }
@@ -225,19 +236,14 @@ fn motion_setting(app: &tauri::AppHandle, appearance: Appearance) -> usize {
         .filter(|index| *index < 5)
         .unwrap_or(0)
 }
-unsafe fn expire(hwnd: HWND) {
-    with_state(|s| {
-        if seconds(s.deadline) == 0 && s.deadline.is_some() {
-            s.files.clear();
-            s.deadline = None;
-            let _ = KillTimer(Some(hwnd), 1);
-            advance_motion(hwnd, s, Some((AnimationPhase::Activity(Cue::FileExpired), 0, false)));
-            if let Ok(mut v) = s.control.status.lock() {
-                v.message = "Hold expired. Original files were left in place.".into();
-            }
-        }
-        publish(s);
-    });
+unsafe fn sync_halo(hwnd: HWND) {
+    if let Some((files, palette)) = with_state(|s| (s.files.clone(), s.appearance.palette())) {
+        crate::file_halo::sync(hwnd, &files, palette);
+    }
+}
+unsafe fn refresh_hold(hwnd: HWND) {
+    with_state(|s| publish(s));
+    sync_halo(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
 }
 fn format() -> FORMATETC {
@@ -458,10 +464,10 @@ impl IDropSource_Impl for Source_Impl {
     }
 }
 unsafe fn drag_out(hwnd: HWND) {
-    expire(hwnd);
-    // Clone before entering OLE's nested message loop; expiry never invalidates a transfer.
+    refresh_hold(hwnd);
+    // Clone before entering OLE's nested message loop; a newer hold never invalidates this transfer.
     let Some((files, control, deadline)) =
-        with_state(|s| (s.files.clone(), s.control.clone(), s.deadline))
+        with_state(|s| (s.files.clone(), s.control.clone(), s.hold_generation))
     else {
         return;
     };
@@ -483,18 +489,18 @@ unsafe fn drag_out(hwnd: HWND) {
         if let Ok(mut v) = s.control.status.lock() {
             v.message = match result {
                 Ok(true) => "Copy handoff accepted.".into(),
-                Ok(false) => "Drag cancelled. Files remain until expiry.".into(),
+                Ok(false) => "Drag cancelled. Files remain held.".into(),
                 Err(e) => e,
             };
         }
     });
-    expire(hwnd);
+    refresh_hold(hwnd);
 }
-unsafe fn finish_handoff(hwnd: HWND, state: &mut State, deadline: Option<Instant>) {
+unsafe fn finish_handoff(hwnd: HWND, state: &mut State, generation: u64) {
     // OLE can dispatch messages during a handoff. Preserve any newer batch.
-    if state.deadline == deadline {
+    if state.hold_generation == generation {
         state.files.clear();
-        state.deadline = None;
+        state.hold_generation = state.hold_generation.wrapping_add(1);
         let _ = KillTimer(Some(hwnd), 1);
         advance_motion(hwnd, state, Some((AnimationPhase::Release, 0, false)));
         publish(state);
@@ -527,8 +533,8 @@ unsafe fn shell_data(files: Vec<PathBuf>) -> Result<IDataObject, String> {
         .map_err(err)
 }
 unsafe fn copy_held(hwnd: HWND) -> Result<(), String> {
-    expire(hwnd);
-    let (files, deadline) = with_state(|s| (s.files.clone(), s.deadline)).unwrap_or_default();
+    refresh_hold(hwnd);
+    let (files, deadline) = with_state(|s| (s.files.clone(), s.hold_generation)).unwrap_or_default();
     let result = (|| -> Result<(), String> {
         let data = shell_data(files)?;
         prefer_copy(&data)?;
@@ -821,7 +827,7 @@ unsafe fn paint(hwnd: HWND) {
         bg,
     );
     let _ = DeleteObject(bg.into());
-    let (count, left, hover, appearance, pose, file_motion, timer, paw, awake, cue, notice) = with_state(|state| {
+    let (count, hover, appearance, pose, file_motion, timer, paw, awake, cue, notice) = with_state(|state| {
         let count = state.files.len();
         let (pose, file_motion) = match state.motion {
             Some((phase, index, _)) => (
@@ -852,7 +858,7 @@ unsafe fn paint(hwnd: HWND) {
         let notice = if importing { Some("Importing…") }
             else if state.drop_notice.is_some_and(|until| until > Instant::now()) { Some("Drop failed · click") }
             else { None };
-        (count, seconds(state.deadline), state.hover, state.appearance, Some(pose), file_motion, timer, paw, awake, cue, notice)
+        (count, state.hover, state.appearance, Some(pose), file_motion, timer, paw, awake, cue, notice)
     }).unwrap_or_default();
     let mapped = SaveDC(dc);
     SetMapMode(dc, MM_TEXT);
@@ -878,7 +884,7 @@ unsafe fn paint(hwnd: HWND) {
     }
     if count > 0 {
         let compact = timer.is_some();
-        let label = if compact { format!("{left}s") } else { format!("{count} held / {left}s") };
+        let label = if compact { count.to_string() } else { format!("{count} held") };
         badge(dc, RECT { left: 9, top: 111, right: if compact { 48 } else { 119 }, bottom: 132 },
             &label, palette.surface, palette.ink);
     }
@@ -893,12 +899,19 @@ unsafe fn paint(hwnd: HWND) {
         let _ = DeleteObject(font.into());
     }
     let _ = EndPaint(hwnd, &ps);
+    sync_halo(hwnd);
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if let Some(result) = crate::menu_theme::handle_message(msg, wp, lp) {
         return result;
     }
     match msg {
+        WM_WINDOWPOSCHANGED | WM_SHOWWINDOW => {
+            let result = DefWindowProcW(hwnd, msg, wp, lp);
+            let _ = PostMessageW(Some(hwnd), HALO_REFRESH, WPARAM(0), LPARAM(0));
+            result
+        }
+        HALO_REFRESH => { sync_halo(hwnd); LRESULT(0) }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -945,7 +958,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_TIMER if wp.0 == 1 => {
-            expire(hwnd);
+            refresh_hold(hwnd);
             LRESULT(0)
         }
         WM_TIMER if wp.0 == NOTICE_TIMER => {
@@ -1165,7 +1178,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_CONTEXTMENU => {
-            expire(hwnd);
+            refresh_hold(hwnd);
             let mut p = POINT::default();
             let _ = GetCursorPos(&mut p);
             if let Ok(menu) = CreatePopupMenu() {
@@ -1200,7 +1213,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         with_state(|s| {
                             s.control.import_generation.fetch_add(1, Ordering::SeqCst);
                             s.files.clear();
-                            s.deadline = None;
+                            s.hold_generation = s.hold_generation.wrapping_add(1);
                             advance_motion(hwnd, s, None);
                             publish(s);
                         });
@@ -1230,6 +1243,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         WM_DESTROY => {
+            crate::file_halo::clear();
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -1277,7 +1291,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                     app: app.clone(),
                     control: output.clone(),
                     files: vec![],
-                    deadline: None,
+                    hold_generation: 0,
                     press: None,
                     hover: false,
                     appearance,
@@ -1290,7 +1304,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
             let hwnd = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 class,
-                w!("Desktop Buddy pet — drop files to hold for 120 seconds"),
+                w!("Desktop Buddy pet — drop files to hold"),
                 WS_POPUP,
                 0,
                 0,

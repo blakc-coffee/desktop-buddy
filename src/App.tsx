@@ -1611,9 +1611,10 @@ export default function App() {
                     <p className="explanation">
                       Click the floating pet for the compact command bar; /tools
                       opens this window. Drop up to 20 local files or folders
-                      onto it to hold references for two minutes. Drag a loaded
-                      pet to copy files into a folder or compatible app;
-                      Alt-drag moves the pet. Expiry never deletes originals.
+                      onto it to hold references until cleared or handed off.
+                      Drag a loaded pet to copy files into a folder or
+                      compatible app; Alt-drag moves the pet. Expiry never
+                      deletes originals.
                     </p>
                     <div className="button-row">
                       <button

@@ -1,6 +1,6 @@
 {
   "identifier": "main",
   "description": "Local utility panel only",
-  "windows": ["main", "todo"],
+  "windows": ["main", "todo", "explanation"],
   "permissions": ["core:default", "core:window:allow-close"]
 }

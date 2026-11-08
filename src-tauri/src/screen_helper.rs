@@ -14,6 +14,7 @@ pub struct ScreenState {
     busy: AtomicBool,
     cancel: AtomicBool,
     capture: Mutex<Option<Capture>>,
+    result: Mutex<Value>,
 }
 struct Capture {
     id: String,
@@ -22,6 +23,19 @@ struct Capture {
     target: isize,
     pid: u32,
     title: String,
+    focus: isize,
+}
+unsafe fn focused_control(window: HWND) -> isize {
+    let thread = GetWindowThreadProcessId(window, None);
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if thread != 0 && GetGUIThreadInfo(thread, &mut info).is_ok() {
+        info.hwndFocus.0 as isize
+    } else {
+        0
+    }
 }
 unsafe fn window_title(window: HWND) -> String {
     let mut text = [0u16; 1024];
@@ -83,6 +97,9 @@ unsafe fn type_answer(capture: &Capture, text: &str, cancel: &AtomicBool) -> Res
     if cancel.load(Ordering::SeqCst) {
         return Err("Typing cancelled.".into());
     }
+    if capture.focus == 0 || focused_control(target) != capture.focus {
+        return Err("The focused control changed or is unavailable. The answer was kept; focus the intended field and capture again.".into());
+    }
     let count = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     if count != inputs.len() as u32 {
         return Err("Typing was blocked or partial. Inspect the field before trying again.".into());
@@ -135,10 +152,14 @@ fn encode(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 // Only called following an explicit capture request, after Buddy is hidden.
-unsafe fn capture_display() -> Result<(Vec<u8>, u32, u32), String> {
+unsafe fn capture_display(scope: &str, target: HWND) -> Result<(Vec<u8>, u32, u32), String> {
     let mut point = POINT::default();
     GetCursorPos(&mut point).map_err(err)?;
-    let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    let monitor = if scope == "window" {
+        MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST)
+    } else {
+        MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST)
+    };
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -146,7 +167,16 @@ unsafe fn capture_display() -> Result<(Vec<u8>, u32, u32), String> {
     if !GetMonitorInfoW(monitor, &mut info).as_bool() {
         return Err("Could not find the current display.".into());
     }
-    let rect = info.rcMonitor;
+    let mut rect = info.rcMonitor;
+    if scope == "area" {
+        rect = crate::screen_region::choose(rect)?;
+    } else if scope == "window" {
+        GetWindowRect(target, &mut rect).map_err(err)?;
+        rect.left = rect.left.max(info.rcMonitor.left);
+        rect.top = rect.top.max(info.rcMonitor.top);
+        rect.right = rect.right.min(info.rcMonitor.right);
+        rect.bottom = rect.bottom.min(info.rcMonitor.bottom);
+    }
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 0 || height <= 0 || i64::from(width) * i64::from(height) > 20_000_000 {
@@ -215,13 +245,21 @@ unsafe fn capture_display() -> Result<(Vec<u8>, u32, u32), String> {
 pub async fn screen_capture(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<ScreenState>>,
+    scope: Option<String>,
 ) -> Result<Value, String> {
+    let scope = scope.unwrap_or_else(|| "display".into());
+    if !["display", "window", "area"].contains(&scope.as_str()) {
+        return Err("Choose display, window or area capture.".into());
+    }
     let owned = state.inner().clone();
     let guard = begin(&owned)?;
     // Hide only Buddy's own tools window. No clipboard, mouse or keyboard input.
     let window = app
         .get_webview_window("main")
         .ok_or("Open the tools window first.")?;
+    if let Some(bubble) = app.get_webview_window("explanation") {
+        let _ = bubble.hide();
+    }
     window.hide().map_err(err)?;
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
@@ -241,7 +279,8 @@ pub async fn screen_capture(
             return Err("Show the app you want to capture while Buddy is hidden.".into());
         }
         let title = unsafe { window_title(target) };
-        let (png, width, height) = unsafe { capture_display()? };
+        let focus = unsafe { focused_control(target) };
+        let (png, width, height) = unsafe { capture_display(&scope, target)? };
         let id = new_id();
         let preview = format!(
             "data:image/png;base64,{}",
@@ -254,6 +293,7 @@ pub async fn screen_capture(
             target: target.0 as isize,
             pid,
             title: title.clone(),
+            focus,
         });
         Ok(json!({"id":id,"preview":preview,"width":width,"height":height,"target":title}))
     })
@@ -269,9 +309,52 @@ pub fn screen_cancel(state: tauri::State<Arc<ScreenState>>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
 #[tauri::command]
-pub fn screen_clear(state: tauri::State<Arc<ScreenState>>) -> Result<(), String> {
+pub fn screen_result(state: tauri::State<Arc<ScreenState>>) -> Result<Value, String> {
+    Ok(state.result.lock().map_err(err)?.clone())
+}
+fn show_bubble(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let window = if let Some(window) = handle.get_webview_window("explanation") {
+            Ok(window)
+        } else {
+            tauri::WebviewWindowBuilder::new(
+                &handle,
+                "explanation",
+                tauri::WebviewUrl::App("index.html?surface=explanation".into()),
+            )
+            .title("Kitty · Explanation")
+            .inner_size(420.0, 480.0)
+            .min_inner_size(320.0, 280.0)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .build()
+        };
+        if let Ok(window) = window {
+            if let Some(control) = handle.try_state::<Arc<crate::pet::Control>>() {
+                if let Some((x, y)) = crate::pet::explanation_position(&control) {
+                    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+                }
+            }
+            if let Some(main) = handle.get_webview_window("main") {
+                let _ = main.hide();
+            }
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    });
+}
+#[tauri::command]
+pub fn screen_clear(
+    app: tauri::AppHandle,
+    state: tauri::State<Arc<ScreenState>>,
+) -> Result<(), String> {
     let _guard = begin(state.inner())?;
     *state.capture.lock().map_err(err)? = None;
+    *state.result.lock().map_err(err)? = Value::Null;
+    if let Some(bubble) = app.get_webview_window("explanation") {
+        let _ = bubble.close();
+    }
     Ok(())
 }
 struct Temporary(PathBuf);
@@ -300,6 +383,7 @@ pub async fn screen_explain(
     model: String,
     question: String,
     fill: bool,
+    compact: Option<bool>,
 ) -> Result<Value, String> {
     if model.is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
         return Err("Select a Codex model first.".into());
@@ -344,7 +428,8 @@ pub async fn screen_explain(
             let mut value = value;
             if fill {
                 let answer_text = value["answer"].as_str().ok_or("No answer was produced.")?;
-                if answer_text.trim().is_empty() { return Err("No unambiguous text answer was produced. Use /exp for an explanation.".into()); }
+                if answer_text.trim().is_empty() { value["typingError"] = "No unambiguous text answer was produced. The explanation is available below.".into(); }
+                else {
                 let capture = owned.capture.lock().map_err(err)?;
                 let capture = capture.as_ref().ok_or("Capture cleared.")?;
                 if owned.cancel.load(Ordering::SeqCst) { return Err("Typing cancelled.".into()); }
@@ -352,11 +437,17 @@ pub async fn screen_explain(
                     Ok(()) => value["typed"] = true.into(),
                     Err(error) => value["typingError"] = error.into(),
                 }
+                }
             }
             Ok(value)
         })();
         if let Ok(mut child) = child.lock() { let _ = child.kill(); let _ = child.wait(); }
         if let Ok(mut workers) = core.workers.lock() { workers.retain(|worker| !Arc::ptr_eq(worker, &child)); }
+        if let Ok(value) = &result {
+            if let Ok(mut saved) = owned.result.lock() { *saved = value.clone(); }
+            let _ = app.emit("screen-result", value);
+            if compact.unwrap_or(false) && !fill { show_bubble(&app); }
+        }
         result
     }).await.map_err(err)?
 }
@@ -398,6 +489,7 @@ mod tests {
             target: 0,
             pid: 0,
             title: String::new(),
+            focus: 0,
         });
         assert!(current(&state, "stale").is_err());
         assert_eq!(current(&state, "fresh").unwrap(), vec![1]);

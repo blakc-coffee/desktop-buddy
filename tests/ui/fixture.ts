@@ -156,13 +156,20 @@ export async function installFixture(
               ),
           };
         }
-        if (command === "screen_explain")
-          return {
+        if (command === "screen_result")
+          return root.fixtureScreenResult || null;
+        if (command === "screen_explain") {
+          const result = {
             explanation:
               "Two plus two is four. Combine two pairs to get four items.",
             answer: "4",
-            typed: !!args.fill,
+            typed: !!args.fill && !root.fixtureTypingError,
+            typingError: root.fixtureTypingError || "",
           };
+          root.fixtureScreenResult = result;
+          root.fixtureEmit("screen-result", result);
+          return result;
+        }
         if (command === "screen_clear" || command === "screen_cancel") return;
         if (command === "codex_models")
           return {

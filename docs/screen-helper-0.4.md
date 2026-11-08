@@ -1,5 +1,7 @@
 # Screen helper commands
 
+Update: [capture scope, recoverable answers and compact explanations](file-cluster-and-screen-polish-0.4.md) are now implemented. `/exp` results open beside the pet.
+
 - `/exp`: capture one display and explain its visible content in Buddy.
 - `/sc`: capture one display, generate one text answer, return focus to the captured app and send Unicode text to its focused field.
 - `/screen` and `/fill` alias `/sc`; `/explain` aliases `/exp`.

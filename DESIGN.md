@@ -167,7 +167,7 @@ The review handoff reports the original four browser/UI findings resolved, with 
 
 ## Native primary surfaces (0.4)
 
-The native pet is a static mint placeholder with a pouch/count and remaining file-hold time. It has no idle render loop. A loaded drag copies references outward; Alt-drag moves it. Expiry is two minutes and never deletes originals.
+The native pet keeps its holding pose and pouch while references are held. Multiple files show click-through labels beside the pet with file-type icons and ellipsized names. Labels follow its position and respect display bounds. There is no file countdown, automatic hold expiry or idle label animation. A loaded drag copies references outward; Alt-drag moves it. Clearing and handoff never delete originals.
 
 Click opens a native EDIT/results bar near the pet. It uses the existing charcoal/mint palette and Segoe UI through standard Windows controls, with explicit focus, Enter/arrows/Tab/Escape and an IME guard. Prefer below the pet, clamped above when screen edges require it. No WebView is involved in primary commands. Detailed management is an explicit secondary window. Native interaction, high-contrast and mixed-DPI acceptance remain device checks; do not claim visual/keyboard certification from parser tests.
 
@@ -184,3 +184,8 @@ See docs/ui-ux-review-2026-11.md for research, the council decision and verifica
 ## Screen helper
 
 Screen helper replaces the browser-only primary destination. `/exp` captures and explains visible content in any app; `/sc` captures and types a text answer into the app active at capture time. The standalone Capture screen button retains a local preview before explicit explanation. Browser control remains optional under a disclosure. The UI names the target, explains the countdown and model sending behavior, and distinguishes sent text events from verified filling. See docs/screen-helper-0.4.md for limits and validation.
+
+
+## Floating held-file labels and compact explanations
+
+Multiple held references flank the pet as small native labels with drawn type icons, readable names and pet-palette surfaces. They preserve the held pose, follow pet movement, ignore pointer input and stop at the work-area edges. The hold has no countdown or automatic expiry. `/exp` uses a small themed explanation window; screen capture exposes explicit display/window-area/rectangle choices. Generated answers remain copyable after failed typing. See docs/file-cluster-and-screen-polish-0.4.md.
