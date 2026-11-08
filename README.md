@@ -10,7 +10,7 @@ Desktop Buddy is a Windows desktop pet and quick launcher for files, projects, t
 
 1. If you already have a build, run **desktop-buddy.exe**. If you cloned this repository, follow [Build from source](#build-from-source).
 2. Click the pet, press **Ctrl+Alt+P** (or **Ctrl+Alt+Space**), or select **Toggle toolbar** from Buddy’s tray menu.
-3. Type a file or folder name to open the wider search view. With the input empty, scroll or press **↑/↓** to browse commands. Press **Tab** to fill a command and **Enter** to run it or open the selected result.
+3. Type a question and press Enter for a quick AI answer, or use `/f name` to open the wider file search view. With the input empty, scroll or press **↑/↓** to browse commands. Press **Tab** to fill a command and **Enter** to run it or open the selected result.
 4. Click outside or press **Esc** to close the launcher. Use the slash commands below to start a timer or pick a pet.
 
 Quit an older Buddy instance from its tray menu before launching a newer executable. The development build is unsigned. The detailed tools window requires the Microsoft Edge WebView2 Runtime.
@@ -100,3 +100,8 @@ cargo test --release --manifest-path src-tauri/Cargo.toml -j 2
 Type `/exp` in the pet command bar to capture and explain what is visible in any app. Type `/sc` to capture and automatically type a generated text answer into the app active at capture time. During the three-second countdown, focus the answer field and place your pointer on its display. Select a Codex image-capable model once; future commands reuse it. No browser extension is required for these commands.
 
 Text entry does not press Enter or submit. Radio/checkbox selection and protected input are not supported by general screen typing. See [screen-helper setup, behavior and limits](docs/screen-helper-0.4.md).
+
+
+## Quick AI answers
+
+Plain text in the native pet command bar now asks your signed-in Codex AI when you press Enter. Replies appear in a small window beside the pet. Use `/d task` for Todos and `/f name` for file search. See [connection behavior and checks](docs/quick-answers-and-pet-polish-0.4.md).

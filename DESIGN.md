@@ -199,3 +199,8 @@ The Todo control uses a fish for Calico, a bone for Dog and bamboo for Panda, dr
 ## Expandable file cards
 
 One to three files show individual drag cards. Four or more start collapsed; Show reveals the filenames and Hide collapses them. An accepted individual copy removes only that file, while cancelled/rejected drops preserve it. Context menus temporarily hide the cards, take foreground ownership and raise native popups/submenus above ordinary windows; the command bar stays above cards. See docs/expandable-file-cards-0.4.md.
+
+
+## Matched miniatures and quick answers
+
+Borderless Todo symbols share the pets' outlined illustration language and source colours: calico fish, cream dog bone and green panda bamboo. Pet drawing scale is 90%; utility controls and file cards stay readable at their existing size. Plain native command-bar text submits an AI question on Enter, while slash commands keep their explicit tool roles. A compact answer surface shows the submitted question, progress, cancellation, errors and the reply. See docs/quick-answers-and-pet-polish-0.4.md.

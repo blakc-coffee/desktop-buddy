@@ -4,7 +4,7 @@
 Windows desktop with a native mini pet and native command bar; an on-demand web-rendered panel handles detailed management. No mobile product.
 
 ## Stack
-User approved the council-reviewed Rust/native Windows primary surface with Tauri/React detailed tools and SQLite. All application state belongs to Rust; browser preview is separate test storage. Ordinary pet commands do not require Codex, a CLI, a browser runtime or model inference.
+User approved the council-reviewed Rust/native Windows primary surface with Tauri/React detailed tools and SQLite. All application state belongs to Rust; browser preview is separate test storage. Local slash commands do not require Codex, a CLI, a browser runtime or model inference. Plain native command-bar text is an explicit AI question on Enter and uses the signed-in Codex CLI.
 
 ## User and task
 Dharu wants a standalone mini pet: click for a compact command bar, find folders, open Cursor workspaces, customise timers, manage todos/reminders, hold files until cleared or handed off, and eventually show Spotify lyrics and optionally limit distracting apps/sites during focus. Existing and managed AI sessions remain separate capabilities. Custom artwork and animations are deferred. Clearing a hold never deletes originals. See docs/desktop-buddy-PRD-v1.2.md and its council review for the revised scope.

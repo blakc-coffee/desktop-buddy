@@ -47,6 +47,8 @@ pub enum Command {
     Reminder { minutes: u32, title: String },
 
     Todo(String),
+
+    Question(String),
 }
 
 pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
@@ -123,6 +125,8 @@ pub fn parse(text: &str) -> Result<Command, String> {
     if text.len() > 1024 {
         return Err("Command is too long.".into());
     }
+
+    if !text.is_empty() && !text.starts_with('/') { return Ok(Command::Question(text.into())); }
 
     let (verb, args) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
 
@@ -260,8 +264,11 @@ mod tests {
         assert!(parse("/ask extra").is_err());
     }
     #[test]
-    fn only_explicit_commands_run() {
-        assert!(parse("delete files").is_err());
+    fn plain_questions_never_become_local_actions_and_slash_commands_stay_explicit() {
+        assert_eq!(parse("delete files"), Ok(Command::Question("delete files".into())));
+        assert_eq!(parse("What is a binary tree?"), Ok(Command::Question("What is a binary tree?".into())));
+        assert_eq!(parse("/d buy milk"), Ok(Command::Todo("buy milk".into())));
+        assert!(parse("/unknown").is_err());
 
         assert!(parse("/t 25m task; calc.exe").is_ok());
 

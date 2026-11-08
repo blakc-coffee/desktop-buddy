@@ -193,11 +193,7 @@ unsafe fn refresh() {
         note("");
         return;
     }
-    let command = if !text.trim().is_empty() && !text.trim_start().starts_with('/') {
-        Ok(Parsed::Find(text.trim().into()))
-    } else {
-        commands::parse(&text)
-    };
+    let command = commands::parse(&text);
     if let Some((_, hint, completion)) =
         commands::definitions()
             .into_iter()
@@ -325,7 +321,7 @@ unsafe fn refresh() {
                     .collect(),
             );
         }
-        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::Todo(_)) => {
+        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::Todo(_) | Parsed::Question(_)) => {
             choices(vec![(String::new(), Action::Input(text))])
         }
         Err(_) => {
@@ -451,6 +447,10 @@ unsafe fn execute() {
             return;
         }
         Action::Input(value) => match commands::parse(&value) {
+            Ok(Parsed::Question(question)) => match crate::screen_helper::quick_answer(app.clone(),question) {
+                Ok(()) => { hide(); return; }
+                Err(error) => Err(error),
+            },
             Ok(Parsed::Timer { minutes, title }) => start_timer(
                 app.clone(),
                 app.state::<Shared>(),

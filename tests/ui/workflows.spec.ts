@@ -533,3 +533,35 @@ test("compact explanation displays code and answer with accessible copy actions"
     ),
   ).toBe(false);
 });
+
+test("quick answer shows a question, progress and cancel result", async ({
+  page,
+}) => {
+  await installFixture(page);
+  await page.addInitScript(() => {
+    (window as any).fixtureScreenResult = {
+      title: "Quick answer",
+      question: "What is a binary tree?",
+      busy: true,
+    };
+  });
+  await page.goto("/?surface=explanation");
+  await expect(
+    page.getByRole("heading", { name: "Quick answer", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("What is a binary tree?", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Asking your AI…", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("Question cancelled.");
+  await expect(
+    page.getByRole("button", { name: "Cancel", exact: true }),
+  ).toHaveCount(0);
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+});

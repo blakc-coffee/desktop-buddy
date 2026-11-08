@@ -170,7 +170,18 @@ export async function installFixture(
           root.fixtureEmit("screen-result", result);
           return result;
         }
-        if (command === "screen_clear" || command === "screen_cancel") return;
+        if (command === "screen_cancel") {
+          if (root.fixtureScreenResult?.busy) {
+            root.fixtureScreenResult = {
+              ...root.fixtureScreenResult,
+              busy: false,
+              error: "Question cancelled.",
+            };
+            root.fixtureEmit("screen-result", null);
+          }
+          return;
+        }
+        if (command === "screen_clear") return;
         if (command === "codex_models")
           return {
             data: [

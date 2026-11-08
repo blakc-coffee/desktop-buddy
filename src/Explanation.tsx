@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { call, native } from "./bridge";
 import type { Snapshot } from "./domain";
 export type ScreenResult = {
+  title?: string;
+  question?: string;
+  busy?: boolean;
+  error?: string;
   explanation: string;
   answer?: string;
   typed?: boolean;
@@ -82,9 +86,26 @@ export default function Explanation() {
         >
           <path d="M4 10 3 3l6 4h6l6-4-1 7v6c-3 6-13 6-16 0zM7 13h2m6 0h2m-6 3h2m-8-1H1m18 0h4" />
         </svg>
-        <h1>Explanation</h1>
+        <h1>{result?.title || "Explanation"}</h1>
       </header>
       {error && <p role="alert">{error}</p>}
+      {result?.question && <p className="quick-question">{result.question}</p>}
+      {result?.error && <p role="alert">{result.error}</p>}
+      {result?.busy && (
+        <div className="screen-status" role="status">
+          <span>Asking your AI…</span>
+          <button
+            className="small-button"
+            onClick={() =>
+              void call("screen_cancel").catch((error) =>
+                setError(String(error)),
+              )
+            }
+          >
+            Cancel
+          </button>
+        </div>
+      )}
       {result?.typingError && <p role="status">{result.typingError}</p>}
       {result?.explanation ? (
         <>
@@ -108,9 +129,9 @@ export default function Explanation() {
             Copy explanation
           </button>
         </>
-      ) : (
+      ) : !result?.busy && !result?.error ? (
         <p>No explanation yet. Use /exp to capture and explain your screen.</p>
-      )}
+      ) : null}
       <p className="copy-status" role="status">
         {copied}
       </p>

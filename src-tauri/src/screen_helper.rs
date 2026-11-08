@@ -331,6 +331,14 @@ fn show_bubble(app: &tauri::AppHandle) {
             .build()
         };
         if let Ok(window) = window {
+            let caption = handle
+                .state::<Arc<ScreenState>>()
+                .result
+                .lock()
+                .ok()
+                .and_then(|value| value["title"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| "Explanation".into());
+            let _ = window.set_title(&format!("Buddy · {caption}"));
             if let Some(control) = handle.try_state::<Arc<crate::pet::Control>>() {
                 if let Some((x, y)) = crate::pet::explanation_position(&control) {
                     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
@@ -366,6 +374,139 @@ impl Drop for Temporary {
         }
         let _ = std::fs::remove_dir(&self.0);
     }
+}
+#[tauri::command]
+pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), String> {
+    let question = question.trim().to_string();
+    if question.is_empty() || question.len() > 4000 {
+        return Err("Type a question under 4,000 characters.".into());
+    }
+    let owned = app.state::<Arc<ScreenState>>().inner().clone();
+    let guard = begin(&owned)?;
+    *owned.result.lock().map_err(err)? =
+        json!({"title":"Quick answer","question":question,"busy":true});
+    let _ = app.emit("screen-result", ());
+    show_bubble(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        let result = (|| -> Result<Value, String> {
+            let cli=resolve_cli("codex").filter(|p|p.extension().is_some_and(|e|e=="exe")).ok_or("Install and sign in to Codex with your ChatGPT account to connect quick answers.")?;
+            let folder = crate::browser_protocol::root()?.join(format!("quick-{}", new_id()));
+            std::fs::create_dir(&folder).map_err(err)?;
+            let _temporary = Temporary(folder.clone());
+            let schema = folder.join("schema.json");
+            let answer = folder.join("answer.json");
+            crate::browser_protocol::atomic(
+                &schema,
+                &json!({"type":"object","additionalProperties":false,"properties":{"explanation":{"type":"string"}},"required":["explanation"]}),
+            )?;
+            let prompt=format!("Give a direct, concise answer to the user's question. Use plain language and short paragraphs; use fenced code only when useful. This is a quick-answer helper, not a coding task to execute. Do not use tools, run commands, access files, control apps, or browse. State when live information is needed and cannot be verified. Return your answer in the requested JSON explanation field. User question: {}",serde_json::to_string(&question).map_err(err)?);
+            use std::os::windows::process::CommandExt;
+            let mut process = Command::new(cli);
+            process
+                .args([
+                    "exec",
+                    "--disable",
+                    "shell_tool",
+                    "--disable",
+                    "unified_exec",
+                    "--disable",
+                    "view_image",
+                    "--disable",
+                    "skill_search",
+                    "--disable",
+                    "plugins",
+                    "--disable",
+                    "apps",
+                    "--disable",
+                    "browser_use",
+                    "--disable",
+                    "browser_use_external",
+                    "--disable",
+                    "in_app_browser",
+                    "--disable",
+                    "image_generation",
+                    "--disable",
+                    "multi_agent",
+                    "--disable",
+                    "multi_agent_v2",
+                    "--config",
+                    "web_search=\"disabled\"",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--ephemeral",
+                    "--skip-git-repo-check",
+                    "--sandbox",
+                    "read-only",
+                    "--color",
+                    "never",
+                ])
+                .arg("--cd")
+                .arg(&folder)
+                .arg("--output-schema")
+                .arg(&schema)
+                .arg("--output-last-message")
+                .arg(&answer)
+                .arg("-")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(0x08000000);
+            let mut child = process.spawn().map_err(err)?;
+            let input = child.stdin.take();
+            let child = Arc::new(Mutex::new(child));
+            let core = app.state::<Shared>();
+            core.workers.lock().map_err(err)?.push(child.clone());
+            let result = (|| {
+                let mut input = input.ok_or("Could not open AI input.")?;
+                input.write_all(prompt.as_bytes()).map_err(err)?;
+                drop(input);
+                let deadline = Instant::now() + Duration::from_secs(90);
+                loop {
+                    if owned.cancel.load(Ordering::SeqCst) {
+                        return Err("Question cancelled.".into());
+                    }
+                    if Instant::now() > deadline {
+                        return Err("The AI took too long. Try the question again.".into());
+                    }
+                    if let Some(status) = child.lock().map_err(err)?.try_wait().map_err(err)? {
+                        if !status.success() {
+                            return Err("Could not get an answer. Check Codex sign-in, connection and allowance.".into());
+                        }
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                let mut value = crate::browser_protocol::read(&answer)?;
+                if value["explanation"]
+                    .as_str()
+                    .is_none_or(|text| text.trim().is_empty() || text.len() > 80000)
+                {
+                    return Err("The AI returned no readable answer. Try again.".into());
+                }
+                value["title"] = "Quick answer".into();
+                value["question"] = question.clone().into();
+                value["busy"] = false.into();
+                Ok(value)
+            })();
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            if let Ok(mut workers) = core.workers.lock() {
+                workers.retain(|worker| !Arc::ptr_eq(worker, &child));
+            }
+            result
+        })();
+        let value = result.unwrap_or_else(
+            |error| json!({"title":"Quick answer","question":question,"busy":false,"error":error}),
+        );
+        if let Ok(mut saved) = owned.result.lock() {
+            *saved = value;
+        }
+        let _ = app.emit("screen-result", ());
+    });
+    Ok(())
 }
 fn current(state: &ScreenState, id: &str) -> Result<Vec<u8>, String> {
     let capture = state.capture.lock().map_err(err)?;

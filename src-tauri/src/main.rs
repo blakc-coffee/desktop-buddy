@@ -782,6 +782,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             screen_helper::screen_capture,
+            screen_helper::quick_answer,
             screen_helper::screen_result,
             screen_helper::screen_explain,
             screen_helper::screen_clear,

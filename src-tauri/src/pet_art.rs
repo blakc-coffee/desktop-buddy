@@ -1,6 +1,8 @@
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 
+const PET_RENDER_SCALE: f32 = 0.9;
+
 /// High-level 5-color palette used for both UI elements and rendering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
@@ -1948,12 +1950,15 @@ include!("pet_final.rs");
 /// Species-specific Todo control, drawn in the pet's logical 96-DPI space.
 pub unsafe fn draw_todo_icon(dc: HDC, appearance: Appearance, due: bool) {
     use ArtPath::*;
-    let palette = appearance.palette();
     let canvas = Canvas { dc, dpi: 96 };
-    let background = palette.surface;
-    let ink = if due { palette.ink } else { palette.accent };
     match appearance {
         Appearance::Dog | Appearance::Husky => {
+            let edge = rgb(134, 69, 46);
+            let cream = if due {
+                rgb(255, 247, 226)
+            } else {
+                rgb(247, 222, 174)
+            };
             canvas.path(
                 &[
                     Move(100, 120),
@@ -1968,43 +1973,83 @@ pub unsafe fn draw_todo_icon(dc: HDC, appearance: Appearance, due: bool) {
                     Curve(245, 85, 220, 90, 210, 120),
                     Close,
                 ],
-                Some(ink),
+                Some(cream),
+                Some(edge),
+                12,
+            );
+            canvas.path(
+                &[
+                    Move(102, 160),
+                    Line(210, 160),
+                    Curve(223, 185, 241, 200, 258, 182),
+                    Curve(250, 211, 226, 208, 210, 180),
+                    Line(100, 180),
+                    Curve(82, 212, 58, 217, 49, 193),
+                    Curve(69, 201, 83, 183, 102, 160),
+                    Close,
+                ],
+                Some(rgb(219, 184, 134)),
                 None,
                 0,
+            );
+            canvas.path(
+                &[Move(107, 132), Line(201, 132)],
+                None,
+                Some(rgb(255, 249, 229)),
+                14,
             );
         }
         Appearance::Panda => {
+            let edge = rgb(61, 87, 69);
+            let stem = if due {
+                rgb(224, 232, 178)
+            } else {
+                rgb(178, 190, 130)
+            };
             canvas.path(
                 &[
-                    Move(85, 70),
-                    Line(135, 70),
-                    Line(135, 275),
-                    Line(85, 275),
+                    Move(85, 75),
+                    Curve(95, 65, 125, 65, 135, 75),
+                    Line(135, 270),
+                    Curve(123, 280, 95, 280, 85, 270),
                     Close,
-                    Move(175, 125),
-                    Line(215, 125),
-                    Line(215, 280),
-                    Line(175, 280),
+                    Move(175, 130),
+                    Curve(185, 120, 205, 120, 215, 130),
+                    Line(215, 275),
+                    Curve(205, 285, 185, 285, 175, 275),
                     Close,
                 ],
-                Some(ink),
-                None,
-                0,
+                Some(stem),
+                Some(edge),
+                10,
             );
             canvas.path(
                 &[
-                    Move(85, 130),
-                    Line(135, 130),
-                    Move(85, 205),
-                    Line(135, 205),
-                    Move(175, 190),
-                    Line(215, 190),
-                    Move(175, 245),
-                    Line(215, 245),
+                    Move(92, 134),
+                    Line(130, 134),
+                    Move(92, 207),
+                    Line(130, 207),
+                    Move(180, 193),
+                    Line(211, 193),
+                    Move(180, 247),
+                    Line(211, 247),
                 ],
                 None,
-                Some(background),
+                Some(edge),
                 12,
+            );
+            canvas.path(
+                &[
+                    Move(100, 85),
+                    Line(100, 119),
+                    Move(100, 150),
+                    Line(100, 190),
+                    Move(190, 140),
+                    Line(190, 179),
+                ],
+                None,
+                Some(rgb(223, 228, 174)),
+                10,
             );
             canvas.path(
                 &[
@@ -2021,36 +2066,65 @@ pub unsafe fn draw_todo_icon(dc: HDC, appearance: Appearance, due: bool) {
                     Curve(255, 150, 240, 165, 215, 170),
                     Close,
                 ],
-                Some(ink),
-                None,
-                0,
+                Some(rgb(113, 137, 87)),
+                Some(edge),
+                9,
             );
         }
         _ => {
+            let edge = rgb(105, 79, 67);
+            let body = if due {
+                rgb(255, 248, 229)
+            } else {
+                rgb(255, 240, 214)
+            };
             canvas.path(
                 &[
-                    Move(85, 160),
-                    Line(25, 110),
-                    Line(25, 245),
-                    Line(85, 205),
+                    Move(90, 165),
+                    Line(30, 118),
+                    Curve(42, 161, 42, 205, 30, 240),
+                    Line(90, 205),
                     Close,
-                    Move(125, 120),
-                    Line(170, 75),
-                    Line(205, 125),
+                    Move(130, 125),
+                    Line(172, 88),
+                    Line(203, 126),
                     Close,
                 ],
-                Some(ink),
+                Some(rgb(199, 110, 64)),
+                Some(edge),
+                11,
+            );
+            canvas.oval([65, 115, 280, 255], Some(body), Some(edge), 12);
+            canvas.path(
+                &[
+                    Move(81, 190),
+                    Curve(120, 231, 205, 249, 252, 216),
+                    Curve(222, 258, 126, 251, 88, 222),
+                    Close,
+                ],
+                Some(rgb(234, 217, 191)),
                 None,
                 0,
             );
-            canvas.oval([65, 115, 280, 255], Some(ink), None, 0);
-            canvas.oval([225, 150, 246, 171], Some(background), None, 0);
             canvas.path(
-                &[Move(150, 140), Curve(170, 175, 170, 205, 150, 230)],
+                &[
+                    Move(104, 128),
+                    Curve(133, 117, 159, 120, 170, 133),
+                    Curve(169, 154, 148, 160, 130, 151),
+                    Curve(115, 145, 108, 139, 104, 128),
+                    Close,
+                ],
+                Some(rgb(199, 110, 64)),
                 None,
-                Some(background),
-                11,
+                0,
             );
+            canvas.path(
+                &[Move(150, 150), Curve(168, 177, 168, 206, 151, 225)],
+                None,
+                Some(edge),
+                10,
+            );
+            canvas.oval([225, 153, 244, 172], Some(rgb(56, 48, 55)), None, 0);
         }
     }
 }
@@ -2069,7 +2143,7 @@ pub unsafe fn draw_pose(
     let saved = SaveDC(dc);
     let pixel = dpi as f32 / 96.0;
     let angle = f32::from(pose.rotation_deg).to_radians();
-    let scale = f32::from(pose.scale_pct) / 100.0;
+    let scale = f32::from(pose.scale_pct) / 100.0 * PET_RENDER_SCALE;
     let (sine, cosine) = angle.sin_cos();
     let (sine, cosine) = (sine * scale, cosine * scale);
     SetGraphicsMode(dc, GM_ADVANCED);

@@ -2049,3 +2049,12 @@ body:has(.todo-window) {
 body:has(.explanation-bubble) {
   min-width: 280px;
 }
+.quick-question {
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
