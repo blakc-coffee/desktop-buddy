@@ -2107,11 +2107,15 @@ html[data-tail="right"] .explanation-bubble::before { left: auto; right: 7px; tr
 
 .explanation-bubble { display: flex; flex-direction: column; max-height: min(336px, calc(100vh - 24px)); overflow: hidden; padding: 18px; }
 .explanation-bubble header { flex: none; margin-bottom: 12px; }
-.bubble-answer { min-height: 0; overflow: auto; padding-right: 5px; scrollbar-width: thin; scrollbar-color: var(--muted) transparent; }
-.bubble-answer::-webkit-scrollbar { width: 6px; height: 6px; }
-.bubble-answer::-webkit-scrollbar-track { background: transparent; }
-.bubble-answer::-webkit-scrollbar-thumb { background: var(--muted); border: 1px solid var(--bg); border-radius: 8px; }
-.bubble-answer::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.bubble-answer { min-height: 0; overflow: auto; padding-right: 5px; scrollbar-gutter: stable; }
+.bubble-answer, .bubble-answer pre { scrollbar-width: auto; scrollbar-color: auto; }
+.bubble-answer::-webkit-scrollbar, .bubble-answer pre::-webkit-scrollbar { width: 4px; height: 4px; }
+.bubble-answer::-webkit-scrollbar-track, .bubble-answer pre::-webkit-scrollbar-track { background: var(--surface); border-radius: 0; }
+.bubble-answer::-webkit-scrollbar-thumb, .bubble-answer pre::-webkit-scrollbar-thumb { background: var(--accent); border: 0; border-radius: 0; }
+.bubble-answer::-webkit-scrollbar-thumb:hover, .bubble-answer pre::-webkit-scrollbar-thumb:hover { background: var(--text); }
+@supports not selector(::-webkit-scrollbar) {
+  .bubble-answer, .bubble-answer pre { scrollbar-width: thin; scrollbar-color: var(--accent) var(--surface); }
+}
 .bubble-followup { flex: none; display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
 .bubble-followup input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; padding: 6px 2px; }
 .followup-send { display: grid; place-items: center; flex: none; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: var(--surface); color: var(--text); cursor: pointer; }

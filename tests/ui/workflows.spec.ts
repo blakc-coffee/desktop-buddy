@@ -575,6 +575,8 @@ test("compact bubble scrolls long answers, sends follow-ups, and dismisses outsi
   await page.goto("/?surface=explanation");await page.getByLabel("Follow-up question").waitFor();
   const size=await page.locator(".explanation-bubble").boundingBox();expect(size!.height).toBeLessThanOrEqual(337);
   expect(await page.locator(".bubble-answer").evaluate(e=>e.scrollHeight>e.clientHeight)).toBe(true);
+  const scrollbar=await page.locator(".bubble-answer").evaluate(e=>({width:getComputedStyle(e,"::-webkit-scrollbar").width,radius:getComputedStyle(e,"::-webkit-scrollbar-thumb").borderRadius}));
+  expect(scrollbar).toEqual({width:"4px",radius:"0px"});
   await page.getByLabel("Follow-up question").fill("Explain with an example");await page.getByRole("button",{name:"Send follow-up",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="bubble_followup").length)).toBe(1);
   await page.mouse.click(1,1);

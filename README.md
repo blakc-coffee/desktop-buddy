@@ -115,3 +115,8 @@ Codex chats and workspace/project features are archived and inaccessible in this
 ### Compact answers and follow-ups
 
 Answer bubbles now fit short replies and stay small for long replies, with a themed scrollbar and fixed header/follow-up controls. Outside clicks or Escape dismiss the bubble. Kitty animates during loading; the bubble appears only after an answer is ready. Type a follow-up at the bottom to continue from the previous answer and, for /exp, the original capture while it remains current. See [behavior and verification](docs/compact-answer-followups-0.4.md).
+
+
+### Faster default explanations
+
+`/exp` now uses a lightweight screen-reading profile on GPT-6 Luna for shorter turnaround, while `/sc` and explicitly selected models keep their prior behavior. The answer scrollbar is a 4-pixel square-edged bar using the current theme accent. See [measurements and behavior](docs/fast-exp-0.4.md).
