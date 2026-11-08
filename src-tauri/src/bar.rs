@@ -18,7 +18,6 @@ use windows::{
             Controls::*,
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::*,
-            Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::*,
         },
     },
@@ -76,7 +75,6 @@ struct Bar {
     hwnd: HWND,
     edit: HWND,
     status: HWND,
-    actions: HWND,
     click_hook: Option<HHOOK>,
     old_edit: WNDPROC,
     choices: Vec<(String, Action)>,
@@ -676,7 +674,7 @@ fn tool_matches(query: &str) -> Vec<(String, Action)> {
         .collect()
 }
 unsafe fn show_actions() {
-    let Some((hwnd, button)) = get(|bar| (bar.hwnd, bar.actions)) else {
+    let Some(hwnd) = get(|bar| bar.hwnd) else {
         return;
     };
     let Ok(menu) = CreatePopupMenu() else {
@@ -769,7 +767,7 @@ unsafe fn show_actions() {
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
     add(menu, &mut actions, "Open tools", Action::Tools);
     let mut rect = RECT::default();
-    let _ = GetWindowRect(button, &mut rect);
+    let _ = GetWindowRect(hwnd, &mut rect);
     change(|bar| bar.menu_active = true);
     let selected = crate::menu_theme::track(
         menu,
@@ -787,52 +785,6 @@ unsafe fn show_actions() {
         choices(vec![(String::new(), action)]);
         execute();
     }
-}
-unsafe fn draw_actions(
-    dc: HDC,
-    rect: RECT,
-    state: ODS_FLAGS,
-    palette: crate::pet_art::Palette,
-    dpi: u32,
-    font: HFONT,
-) {
-    let scale = |value: i32| value * dpi as i32 / 96;
-    let brush = CreateSolidBrush(if state.0 & ODS_SELECTED.0 != 0 {
-        palette.selection
-    } else {
-        palette.surface
-    });
-    let pen = CreatePen(PS_SOLID, 1, palette.outline);
-    let old_brush = SelectObject(dc, brush.into());
-    let old_pen = SelectObject(dc, pen.into());
-    let _ = RoundRect(
-        dc,
-        rect.left,
-        rect.top,
-        rect.right,
-        rect.bottom,
-        scale(12),
-        scale(12),
-    );
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, palette.ink);
-    let old_font = SelectObject(dc, font.into());
-    let mut bounds = rect;
-    let mut label: Vec<_> = "Actions".encode_utf16().collect();
-    DrawTextW(
-        dc,
-        &mut label,
-        &mut bounds,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-    );
-    if state.0 & ODS_FOCUS.0 != 0 {
-        let _ = DrawFocusRect(dc, &rect);
-    }
-    SelectObject(dc, old_font);
-    SelectObject(dc, old_pen);
-    SelectObject(dc, old_brush);
-    let _ = DeleteObject(pen.into());
-    let _ = DeleteObject(brush.into());
 }
 unsafe fn draw_result_icon(
     dc: HDC,
@@ -890,11 +842,10 @@ unsafe fn draw_result_icon(
 unsafe fn layout(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let s = |v: i32| v * dpi as i32 / 96;
-    let Some((edit, status, actions, pet, rows, file_search)) = get(|b| {
+    let Some((edit, status, pet, rows, file_search)) = get(|b| {
         (
             b.edit,
             b.status,
-            b.actions,
             b.pet,
             if b.finder {
                 b.choices.len().min(b.visible_rows())
@@ -919,7 +870,7 @@ unsafe fn layout(hwnd: HWND) {
     }
     let width = rect.right;
     let start = s(16);
-    let end = width - s(106);
+    let end = width - s(16);
     let status_width = if has_note { s(130).min(width / 3) } else { 0 };
     let _ = SetWindowPos(
         edit,
@@ -937,15 +888,6 @@ unsafe fn layout(hwnd: HWND) {
         s(18),
         (status_width - s(8)).max(1),
         s(22),
-        SWP_NOZORDER,
-    );
-    let _ = SetWindowPos(
-        actions,
-        None,
-        width - s(92),
-        s(10),
-        s(80),
-        s(36),
         SWP_NOZORDER,
     );
     if get(|b| b.dpi) != Some(dpi) {
@@ -971,7 +913,7 @@ unsafe fn layout(hwnd: HWND) {
             b.dpi = dpi;
             old
         });
-        for h in [edit, status, actions] {
+        for h in [edit, status] {
             SendMessageW(
                 h,
                 WM_SETFONT,
@@ -1024,36 +966,6 @@ unsafe fn theme_edit_menu(menu: HMENU) {
     });
 }
 
-unsafe extern "system" fn actions_proc(
-    hwnd: HWND,
-    msg: u32,
-    wp: WPARAM,
-    lp: LPARAM,
-    _id: usize,
-    _data: usize,
-) -> LRESULT {
-    if msg == WM_KEYDOWN {
-        match wp.0 as u16 {
-            value if value == VK_ESCAPE.0 => {
-                hide();
-                return LRESULT(0);
-            }
-            value if value == VK_TAB.0 => {
-                if let Some(edit) = get(|bar| bar.edit) {
-                    let _ = SetFocus(Some(edit));
-                }
-                return LRESULT(0);
-            }
-            value if value == VK_RETURN.0 || value == VK_F4.0 => {
-                show_actions();
-                return LRESULT(0);
-            }
-            _ => {}
-        }
-    }
-    DefSubclassProc(hwnd, msg, wp, lp)
-}
-
 unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if let Some(result) = crate::menu_theme::handle_message(msg, wp, lp) {
         return result;
@@ -1103,8 +1015,6 @@ unsafe extern "system" fn input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     get(|b| b.choices.get(b.selected).map(|row| row.1.clone()))
                 {
                     fill(value);
-                } else if let Some(actions) = get(|bar| bar.actions) {
-                    let _ = SetFocus(Some(actions));
                 }
                 return LRESULT(0);
             }
@@ -1304,18 +1214,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             browse(((wp.0 >> 16) as i16) < 0);
             LRESULT(0)
         }
-        WM_DRAWITEM if wp.0 == 4 => {
-            let item = &*(lp.0 as *const DRAWITEMSTRUCT);
-            draw_actions(
-                item.hDC,
-                item.rcItem,
-                item.itemState,
-                pet::appearance().palette(),
-                GetDpiForWindow(hwnd).max(96),
-                get(|bar| bar.font).unwrap_or_default(),
-            );
-            LRESULT(1)
-        }
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
@@ -1374,10 +1272,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(GetStockObject(DC_BRUSH).0 as isize)
         }
         WM_COMMAND => {
-            if wp.0 & 0xffff == 4 {
-                show_actions();
-                return LRESULT(0);
-            }
             let id = wp.0 & 0xffff;
             let code = (wp.0 >> 16) & 0xffff;
             if id == 1 && code == EN_CHANGE as usize {
@@ -1539,14 +1433,13 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 None,
             )
         };
-        let (Ok(edit), Ok(status), Ok(actions)) = (
+        let (Ok(edit), Ok(status)) = (
             create(w!("EDIT"), WINDOW_STYLE(ES_AUTOHSCROLL as u32), 1),
             create(
                 w!("STATIC"),
                 WINDOW_STYLE(SS_ENDELLIPSIS.0 | SS_NOPREFIX.0),
                 3,
             ),
-            create(w!("BUTTON"), WINDOW_STYLE(BS_OWNERDRAW as u32), 4),
         ) else {
             let _ = DestroyWindow(hwnd);
             return;
@@ -1571,7 +1464,6 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 hwnd,
                 edit,
                 status,
-                actions,
                 click_hook: None,
                 old_edit,
                 choices: vec![],
@@ -1586,8 +1478,6 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 menu_theme: None,
             })
         });
-        let _ = SetWindowTextW(actions, w!("Actions"));
-        let _ = SetWindowSubclass(actions, Some(actions_proc), 1, 0);
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);
     }
     let Some((hwnd, edit)) = get(|b| (b.hwnd, b.edit)) else {
@@ -1729,26 +1619,13 @@ mod tests {
                     let mut input = RECT {
                         left: s(16),
                         top: s(18),
-                        right: s(WIDTH - 106),
+                        right: s(WIDTH - 16),
                         bottom: s(42),
                     };
                     let mut text: Vec<_> = "notes".encode_utf16().collect();
                     SetTextColor(dc, palette.ink);
                     DrawTextW(dc, &mut text, &mut input, DT_SINGLELINE | DT_NOPREFIX);
                     SelectObject(dc, previous_font);
-                    draw_actions(
-                        dc,
-                        RECT {
-                            left: s(WIDTH - 92),
-                            top: s(10),
-                            right: s(WIDTH - 12),
-                            bottom: s(46),
-                        },
-                        ODS_FLAGS(0),
-                        palette,
-                        dpi,
-                        font,
-                    );
                 }
                 let _ = DeleteObject(font.into());
                 x += s(WIDTH) + 10;

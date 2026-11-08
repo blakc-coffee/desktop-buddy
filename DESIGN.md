@@ -81,7 +81,7 @@ components:
 
 ## Native toolbar and compact Todo
 
-The native command bar uses Segoe UI at 14 DIP, a 56 DIP input row, 48 DIP results, a reserved Actions text button, and the selected pet's semantic palette. It opens blank; suggestions appear only while browsing. Native result icons use a consistent drawn outline. Actions groups detailed tools rather than exposing a long flat menu. The pet context menu has five entries.
+The native command bar uses Segoe UI at 14 DIP, a 56 DIP input row, 48 DIP results, a full-width command input, and the selected pet's semantic palette. It opens blank; suggestions appear only while browsing. Native result icons use a consistent drawn outline. Detailed tools remain available through slash commands, F4 and Open tools in the pet menu. The pet context menu has five entries.
 
 The compact Todo window uses the same pet palette, a 24px Todo heading, a single add row and divider-separated editable checklist rows. It remains a desktop surface with 300px minimum width. Detailed management keeps the established warm charcoal design below.
 
