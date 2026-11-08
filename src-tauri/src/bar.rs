@@ -321,7 +321,7 @@ unsafe fn refresh() {
                     .collect(),
             );
         }
-        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::Todo(_) | Parsed::Question(_)) => {
+        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::Todo(_) | Parsed::Question(_) | Parsed::Screen { .. }) => {
             choices(vec![(String::new(), Action::Input(text))])
         }
         Err(_) => {
@@ -400,7 +400,7 @@ unsafe extern "system" fn outside_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LR
     CallNextHookEx(None, code, wp, lp)
 }
 fn open_tools(app: tauri::AppHandle) {
-    crate::navigation::open(app, commands::Destination::Activity);
+    crate::navigation::open(app, commands::Destination::Settings);
 }
 
 fn open_editor(path: String) -> Result<(), String> {
@@ -447,6 +447,11 @@ unsafe fn execute() {
             return;
         }
         Action::Input(value) => match commands::parse(&value) {
+            Ok(Parsed::Screen { question, fill }) => {
+                hide();
+                crate::screen_helper::run_command(app.clone(), question, fill);
+                return;
+            },
             Ok(Parsed::Question(question)) => match crate::screen_helper::quick_answer(app.clone(),question) {
                 Ok(()) => { hide(); return; }
                 Err(error) => Err(error),

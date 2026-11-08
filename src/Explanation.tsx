@@ -27,6 +27,20 @@ export function ResultText({ text }: { text: string }) {
     </div>
   );
 }
+export function BubbleClose() {
+  useEffect(() => {
+    void call<{side:string;tail:number}>("bubble_anchor").then(anchor => {
+      document.documentElement.dataset.tail=anchor.side;
+      document.documentElement.style.setProperty("--bubble-tail", `${anchor.tail}%`);
+    }).catch(()=>{});
+    const close = (e: KeyboardEvent) => { if (e.key === "Escape" && native) void import("@tauri-apps/api/window").then(({getCurrentWindow}) => getCurrentWindow().close()); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, []);
+  return <button className="bubble-close" aria-label="Close bubble" onClick={() => {
+    if (native) void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().close());
+  }}>×</button>;
+}
 export default function Explanation() {
   const [result, setResult] = useState<ScreenResult | null>(null);
   const [error, setError] = useState("");
@@ -73,7 +87,8 @@ export default function Explanation() {
     }
   }
   return (
-    <main className="explanation-bubble">
+    <main className="explanation-bubble" aria-busy={result?.busy || false}>
+      <BubbleClose />
       <header>
         <svg
           aria-hidden="true"
@@ -93,6 +108,7 @@ export default function Explanation() {
       {result?.error && <p role="alert">{result.error}</p>}
       {result?.busy && (
         <div className="screen-status" role="status">
+          <span className="kitty-thinking" aria-hidden="true"><i /><i /><i /></span>
           <span>Asking your AI…</span>
           <button
             className="small-button"
@@ -132,6 +148,7 @@ export default function Explanation() {
       ) : !result?.busy && !result?.error ? (
         <p>No explanation yet. Use /exp to capture and explain your screen.</p>
       ) : null}
+      <footer className="bubble-source">Via Codex · Uses your signed-in account allowance</footer>
       <p className="copy-status" role="status">
         {copied}
       </p>

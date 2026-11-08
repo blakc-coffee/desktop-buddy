@@ -9,6 +9,8 @@ mod navigation;
 mod browser_protocol;
 mod browser_fill;
 mod screen_helper;
+mod screen_controls;
+mod chat_bubble;
 mod screen_region;
 mod menu_theme;
 mod pet;
@@ -793,6 +795,7 @@ fn main() {
             browser_fill::browser_generate,
             browser_fill::browser_apply,
             browser_fill::browser_cancel,
+            navigation::bubble_anchor,
             navigation::panel_navigation,
             navigation::acknowledge_navigation,
             save_item,
@@ -808,6 +811,8 @@ fn main() {
             export_backup,
             import_backup,
             providers,
+            chat_bubble::kitty_chats,
+            chat_bubble::kitty_chat_send,
             codex_sessions,
             codex_models,
             agents::agent_snapshot,

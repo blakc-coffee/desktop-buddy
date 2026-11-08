@@ -565,3 +565,26 @@ test("quick answer shows a question, progress and cancel result", async ({
     .analyze();
   expect(results.violations).toEqual([]);
 });
+
+
+test("Kitty chats distinguish live tasks, accept explicit follow-ups, and never show toolbar", async ({page}) => {
+  await installFixture(page);
+  await page.addInitScript(()=>{(window as any).fixtureChats={live:true,data:[{id:"a",name:"Running project",preview:"",updatedAt:1700000000,status:{type:"active"}},{id:"b",name:"Finished project",preview:"",updatedAt:1700000000,status:{type:"idle"}}]};});
+  await page.goto("/?surface=chats");
+  await expect(page.getByRole("heading",{name:"Codex chats"})).toBeVisible();
+  await expect(page.getByRole("navigation")).toHaveCount(0);
+  await page.getByRole("button",{name:/Running project/}).click();
+  await page.getByLabel("Message to Running project").fill("Please explain the result");
+  await page.getByRole("button",{name:"Send to running task"}).click();
+  await expect(page.getByRole("status")).toContainText("Message accepted");
+  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="kitty_chat_send").length)).toBe(1);
+});
+test("unloaded chat history never claims idle or enables sending", async ({page})=>{
+  await page.setViewportSize({width:320,height:480});await installFixture(page,"light");
+  await page.addInitScript(()=>{(window as any).fixtureChats={live:false,data:[{id:"a",name:"Saved project",preview:"",updatedAt:1700000000,status:{type:"notLoaded"}}]};});
+  await page.goto("/?surface=chats");await page.getByRole("button",{name:/Saved project/}).click();
+  await expect(page.getByText("Status unavailable",{exact:true})).toBeVisible();
+  await page.getByLabel("Message to Saved project").fill("Follow up");await expect(page.getByRole("button",{name:"Send message"})).toBeDisabled();
+  const results=await new AxeBuilder({page}).withTags(["wcag2a","wcag2aa","wcag21aa","wcag22aa"]).analyze();expect(results.violations).toEqual([]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
+});

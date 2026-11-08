@@ -25,7 +25,7 @@ Quit an older Buddy instance from its tray menu before launching a newer executa
 | `/r 10m stretch` | Set a reminder for 10 minutes from now |
 | `/w my project` | Find a saved workspace and open it in Cursor or Explorer |
 | `/pet` | Choose a pet and apply its launcher theme |
-| `/codex` | Open Codex tasks in Activity |
+| `/codex` | Recent local chats in Kitty’s scrollable bubble; live messaging requires a shared Codex connection |
 | `/resume` | Pick up a saved project in Activity |
 | `/tools` | Open the detailed tools window |
 | `/copy` | Copy the file references currently held by the pet |
@@ -97,9 +97,9 @@ cargo test --release --manifest-path src-tauri/Cargo.toml -j 2
 
 ## Screen helper
 
-Type `/exp` in the pet command bar to capture and explain what is visible in any app. Type `/sc` to capture and automatically type a generated text answer into the app active at capture time. During the three-second countdown, focus the answer field and place your pointer on its display. Select a Codex image-capable model once; future commands reuse it. No browser extension is required for these commands.
+Type `/exp your question` to capture the current display after three seconds and answer your question in a speech bubble beside Kitty, with loading dots and nerdy glasses. The tools window stays closed. Type `/sc your question` to fill one supported accessible text field or select a radio/checkbox quiz option. Put the intended app in front during the countdown. No suitable control means Kitty gives an attention animation and changes nothing. Submit buttons and password fields are excluded. Custom canvas controls may not expose the Windows accessibility support required for filling.
 
-Text entry does not press Enter or submit. Radio/checkbox selection and protected input are not supported by general screen typing. See [screen-helper setup, behavior and limits](docs/screen-helper-0.4.md).
+Plain text asks your signed-in Codex account for a quick answer. The command picker suggests 10 everyday actions; `/tools` opens management/settings. `/codex` lists recent local chats. Source-reported running/idle states and explicit follow-ups require a live shared app-server connection; this desktop installation did not expose that connection during verification, so Kitty displays unavailable status and disables sending. See [speech-bubble behavior, connection and limits](docs/kitty-bubbles-0.4.md).
 
 
 ## Quick AI answers

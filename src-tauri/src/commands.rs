@@ -49,6 +49,7 @@ pub enum Command {
     Todo(String),
 
     Question(String),
+    Screen { question: String, fill: bool },
 }
 
 pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
@@ -65,57 +66,18 @@ pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 21] {
+pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 10] {
     [
-        (
-            &["/sc", "/screen", "/fill"][..],
-            "/sc \u{b7} Capture screen and fill answer",
-            "/sc",
-        ),
-        (&["/exp", "/explain"][..], "/exp · Explain what is on screen", "/exp"),
-        (&["/t", "/timer", "/focus"][..], "/t 25m · Timer", "/t "),
-        (
-            &["/f", "/find"][..],
-            "/f name · Find files and folders",
-            "/f ",
-        ),
-        (&["/w", "/workspace"][..], "/w name · Workspace", "/w "),
-        (&["/d", "/todo"][..], "/d task · To-do", "/d "),
-        (&["/r", "/remind"][..], "/r 10m · Reminder", "/r "),
-        (&["/codex"][..], "/codex · Open Codex tasks", "/codex"),
-        (&["/resume"][..], "/resume · Pick up a project", "/resume"),
-        (&["/ask"][..], "/ask \u{b7} Ask about files", "/ask"),
-        (&["/todos"][..], "/todos \u{b7} Todo checklist", "/todos"),
-        (&["/timers"][..], "/timers \u{b7} Manage timers", "/timers"),
-        (
-            &["/reminders"][..],
-            "/reminders \u{b7} Manage reminders",
-            "/reminders",
-        ),
-        (
-            &["/projects"][..],
-            "/projects \u{b7} Saved projects",
-            "/projects",
-        ),
-        (&["/shelf"][..], "/shelf \u{b7} Pinned references", "/shelf"),
-        (&["/held"][..], "/held \u{b7} Files in the pouch", "/held"),
-        (
-            &["/imports"][..],
-            "/imports \u{b7} Open imported files folder",
-            "/imports",
-        ),
-        (
-            &["/settings"][..],
-            "/settings \u{b7} Settings and backups",
-            "/settings",
-        ),
-        (&["/music"][..], "/music \u{b7} Music tools", "/music"),
-        (
-            &["/actions"][..],
-            "/actions \u{b7} Open tools panel",
-            "/actions",
-        ),
-        (&["/pet"][..], "/pet · Choose pet", "/pet"),
+        (&["/sc", "/screen", "/fill"], "/sc question · Capture and fill", "/sc "),
+        (&["/exp", "/explain"], "/exp question · Explain screen", "/exp "),
+        (&["/codex"], "/codex · Recent chats", "/codex"),
+        (&["/t", "/timer", "/focus"], "/t 25m task · Timer", "/t "),
+        (&["/r", "/remind"], "/r 10m message · Reminder", "/r "),
+        (&["/d", "/todo"], "/d task · Add todo", "/d "),
+        (&["/todos"], "/todos · Checklist", "/todos"),
+        (&["/f", "/find"], "/f name · Find files", "/f "),
+        (&["/w", "/workspace"], "/w name · Open workspace", "/w "),
+        (&["/tools", "/settings"], "/tools · Manage tools and settings", "/tools"),
     ]
 }
 
@@ -139,8 +101,8 @@ pub fn parse(text: &str) -> Result<Command, String> {
 
         "/tools" | "/actions" if args.is_empty() => Ok(Command::Tools),
 
-        "/sc" | "/screen" | "/fill" if args.is_empty() => Ok(Command::Panel(Destination::ScreenCapture)),
-        "/exp" | "/explain" if args.is_empty() => Ok(Command::Panel(Destination::ScreenExplain)),
+        "/sc" | "/screen" | "/fill" => Ok(Command::Screen { question: args.into(), fill: true }),
+        "/exp" | "/explain" => Ok(Command::Screen { question: args.into(), fill: false }),
         "/codex" if args.is_empty() => Ok(Command::Panel(Destination::Codex)),
 
         "/ask" if args.is_empty() => Ok(Command::Panel(Destination::Ask)),
@@ -226,21 +188,21 @@ mod tests {
     #[test]
 
     fn autocomplete_browses_empty_input_and_leaves_arguments_alone() {
-        assert_eq!(suggestions("").len(), 21);
+        assert_eq!(suggestions("").len(), 10);
 
         assert_eq!(parse("/resume"), Ok(Command::Panel(Destination::Resume)));
 
         assert!(suggestions("/copy").is_empty());
 
-        assert_eq!(parse("/sc"), Ok(Command::Panel(Destination::ScreenCapture)));
-        assert_eq!(parse("/exp"), Ok(Command::Panel(Destination::ScreenExplain)));
+        assert_eq!(parse("/sc"), Ok(Command::Screen { question: String::new(), fill: true }));
+        assert_eq!(parse("/exp"), Ok(Command::Screen { question: String::new(), fill: false }));
         assert_eq!(parse("/codex"), Ok(Command::Panel(Destination::Codex)));
 
-        assert_eq!(suggestions("/too").len(), 0);
+        assert_eq!(suggestions("/too").len(), 1);
 
         assert_eq!(parse("/pet"), Ok(Command::Pets));
 
-        assert_eq!(suggestions("/ti").len(), 2);
+        assert_eq!(suggestions("/ti").len(), 1);
 
         assert!(suggestions("/t ").is_empty());
 
@@ -261,6 +223,7 @@ mod tests {
         assert_eq!(parse("/todos"), Ok(Command::Todos));
         assert_eq!(parse("/held"), Ok(Command::Held));
         assert!(parse("/s").is_err());
+        assert_eq!(parse("/exp why this error?"), Ok(Command::Screen { question: "why this error?".into(), fill: false }));
         assert!(parse("/ask extra").is_err());
     }
     #[test]

@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import Todo from "./Todo";
+import Chats from "./Chats";
 import Explanation from "./Explanation";
 import "./style.css";
 createRoot(document.getElementById("root")!).render(
@@ -14,7 +15,7 @@ createRoot(document.getElementById("root")!).render(
       "explanation" ? (
       <Explanation />
     ) : (
-      <App />
+      new URLSearchParams(location.search).get("surface") === "chats" ? <Chats /> : <App />
     )}
   </React.StrictMode>,
 );

@@ -2139,7 +2139,8 @@ pub unsafe fn draw_pose(
     file_motion: Option<(i32, i32)>,
     awake: bool,
     cue: Option<Cue>,
-) {
+) { draw_pose_accessory(dc, appearance, hover, dpi, pose, file_motion, awake, cue, false); }
+pub unsafe fn draw_pose_accessory(dc: HDC, appearance: Appearance, hover: bool, dpi: i32, pose: PoseKeyframe, file_motion: Option<(i32,i32)>, awake: bool, cue: Option<Cue>, nerdy: bool) {
     let saved = SaveDC(dc);
     let pixel = dpi as f32 / 96.0;
     let angle = f32::from(pose.rotation_deg).to_radians();
@@ -2163,7 +2164,8 @@ pub unsafe fn draw_pose(
 
     SetPolyFillMode(dc, WINDING);
     let canvas = Canvas { dc, dpi };
-    draw_final_art(&canvas, appearance, awake);
+    draw_final_art(&canvas, appearance, awake || nerdy);
+    if nerdy { draw_glasses(dc, appearance, dpi); }
     if let Some((file_x, file_y)) = file_motion {
         use ArtPath::*;
         let palette = appearance.palette();
@@ -2227,4 +2229,22 @@ unsafe fn draw_cue(canvas: &Canvas, palette: Palette, cue: Cue) {
     };
     canvas.oval([1000, 55, 1240, 282], Some(palette.surface), Some(palette.outline), 14);
     canvas.path(mark, None, Some(palette.accent), 20);
+}
+
+/// Lightweight accessory following each species' illustrated eye positions.
+pub unsafe fn draw_glasses(dc: HDC, appearance: Appearance, dpi: i32) {
+    use ArtPath::*;
+    let saved = SaveDC(dc);
+    let canvas = Canvas { dc, dpi };
+    let (x, y, right, ry) = match appearance {
+        Appearance::Calico | Appearance::Cat => (550,490,840,480),
+        Appearance::Dog | Appearance::Husky => (515,460,840,465),
+        Appearance::Panda => (310,825,550,785),
+    };
+    let ink = rgb(48,43,53);
+    canvas.oval([x-105,y-80,x+105,y+80],None,Some(ink),25);
+    canvas.oval([right-105,ry-80,right+105,ry+80],None,Some(ink),25);
+    canvas.path(&[Move(x+105,y-15),Curve(x+145,y-40,right-145,ry-40,right-105,ry-15)],None,Some(ink),22);
+    canvas.path(&[Move(x-105,y-15),Line(x-145,y-40),Move(right+105,ry-15),Line(right+145,ry-40)],None,Some(ink),20);
+    let _ = RestoreDC(dc,saved);
 }

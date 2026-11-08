@@ -37,6 +37,7 @@ pub fn acknowledge_navigation(state: tauri::State<Navigation>, id: u64) -> Resul
     state.acknowledge(id)
 }
 pub fn open(app: tauri::AppHandle, destination: Destination) {
+    if destination == Destination::Codex { chats(app); return; }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Ok(request) = handle.state::<Navigation>().queue(destination) {
@@ -76,4 +77,27 @@ mod tests {
         state.acknowledge(second.id).unwrap();
         assert!(state.0.lock().unwrap().1.is_none());
     }
+}
+
+pub fn chats(app:tauri::AppHandle) {
+    let handle=app.clone();
+    let _=app.run_on_main_thread(move || {
+        let window=if let Some(window)=handle.get_webview_window("chats") {Ok(window)} else {
+            tauri::WebviewWindowBuilder::new(&handle,"chats",tauri::WebviewUrl::App("index.html?surface=chats".into()))
+                .title("Kitty · Codex chats").inner_size(420.0,480.0).min_inner_size(280.0,240.0)
+                .visible(false).decorations(false).transparent(true).shadow(false).always_on_top(true).skip_taskbar(true).build()
+        };
+        if let Ok(window)=window {
+            if let Some(control)=handle.try_state::<Arc<crate::pet::Control>>() {
+                if let Some((x,y,side,_))=crate::pet::explanation_position(&control) {let _=window.set_position(tauri::PhysicalPosition::new(x,y));let _=window.eval(&format!("document.documentElement.dataset.tail=\"{}\"",side));}
+            }
+            let _=window.show();let _=window.set_focus();
+        }
+    });
+}
+
+#[tauri::command]
+pub fn bubble_anchor(app:tauri::AppHandle)->serde_json::Value {
+    app.try_state::<Arc<crate::pet::Control>>().and_then(|control| crate::pet::explanation_position(&control))
+        .map(|(_,_,side,tail)|serde_json::json!({"side":side,"tail":tail})).unwrap_or(serde_json::json!({"side":"left","tail":50}))
 }
