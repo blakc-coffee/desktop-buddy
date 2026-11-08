@@ -586,4 +586,6 @@ test("archived entry points stay inaccessible and explanations have no connectio
   await page.addInitScript(()=>{(window as any).fixtureScreenResult={title:"Explanation",question:"What is this?",explanation:"A concise explanation."};});
   await page.goto("/?surface=explanation");await expect(page.getByText("A concise explanation.",{exact:true})).toBeVisible();
   await expect(page.getByText(/Via Codex|account allowance|Asking your AI|What is this\?/)).toHaveCount(0);
+  await expect(page.locator("header").getByRole("button",{name:"Copy explanation",exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Copy explanation",exact:true})).toHaveCount(1);
 });

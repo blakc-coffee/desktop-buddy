@@ -102,6 +102,9 @@ export default function Explanation() {
           <path d="M4 10 3 3l6 4h6l6-4-1 7v6c-3 6-13 6-16 0zM7 13h2m6 0h2m-6 3h2m-8-1H1m18 0h4" />
         </svg>
         <h1>{result?.title || "Explanation"}</h1>
+        {result?.explanation && <button className="bubble-copy" aria-label="Copy explanation" title="Copy explanation" onClick={() => void copy(result.explanation, "Copied")}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>
+        </button>}
       </header>
       {error && <p role="alert">{error}</p>}
 
@@ -137,12 +140,7 @@ export default function Explanation() {
               </button>
             </section>
           )}
-          <button
-            className="small-button"
-            onClick={() => void copy(result.explanation, "Explanation copied")}
-          >
-            Copy explanation
-          </button>
+
         </>
       ) : !result?.busy && !result?.error ? (
         <p>No explanation yet. Use /exp to capture and explain your screen.</p>

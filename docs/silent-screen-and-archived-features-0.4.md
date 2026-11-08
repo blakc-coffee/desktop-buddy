@@ -11,3 +11,5 @@ Validation: 8 frontend unit tests and 59 native tests passed. A synthetic questi
 Official configuration reference checked: https://learn.chatgpt.com/docs/config-file/config-reference (model_reasoning_effort; supported levels depend on the model).
 
 UI validation: 15 active workflows passed across dark/light themes and desktop/narrow windows, including keyboard/focus, accessibility, archived entry-point blocking and no connection chatter. Four archived feature scenarios remain skipped for later restoration.
+
+The explanation Copy action is a single icon button in the bubble header beside Close, with a keyboard focus outline and accessible label. The duplicate bottom action is removed.

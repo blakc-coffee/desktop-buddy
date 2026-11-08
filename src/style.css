@@ -2095,3 +2095,8 @@ html[data-tail="right"] .explanation-bubble::before { left: auto; right: 7px; tr
 .chat-compose { display: grid; gap: 8px; margin-top: 16px; }
 .chat-compose textarea { resize: vertical; min-height: 75px; width: 100%; }
 .chat-compose label { font-size: 13px; }
+
+.explanation-bubble header { padding-right: 64px; }
+.bubble-copy { position: absolute; right: 48px; top: 12px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
+.bubble-copy:hover { background: var(--surface); color: var(--text); }
+.bubble-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
