@@ -376,6 +376,17 @@ pub fn screen_clear(
     Ok(())
 }
 struct Temporary(PathBuf);
+impl Temporary {
+    fn create(root: &Path, kind: &str) -> Result<Self, String> {
+        // Screen/quick answers also work before the optional browser helper has run.
+        std::fs::create_dir_all(root)
+            .map_err(|error| format!("Could not prepare Buddy's AI request directory: {error}"))?;
+        let folder = root.join(format!("{kind}-{}", new_id()));
+        std::fs::create_dir(&folder)
+            .map_err(|error| format!("Could not create Buddy's AI request folder: {error}"))?;
+        Ok(Self(folder))
+    }
+}
 impl Drop for Temporary {
     fn drop(&mut self) {
         // Fixed filenames in our own unique directory only; never user files.
@@ -401,9 +412,8 @@ pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), Strin
         let _guard = guard;
         let result = (|| -> Result<Value, String> {
             let cli=resolve_cli("codex").filter(|p|p.extension().is_some_and(|e|e=="exe")).ok_or("Install and sign in to Codex with your ChatGPT account to connect quick answers.")?;
-            let folder = crate::browser_protocol::root()?.join(format!("quick-{}", new_id()));
-            std::fs::create_dir(&folder).map_err(err)?;
-            let _temporary = Temporary(folder.clone());
+            let _temporary = Temporary::create(&crate::browser_protocol::root()?, "quick")?;
+            let folder = &_temporary.0;
             let schema = folder.join("schema.json");
             let answer = folder.join("answer.json");
             crate::browser_protocol::atomic(
@@ -554,8 +564,8 @@ pub async fn screen_explain(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard; let png = current(&owned, &capture_id)?;
         let cli = resolve_cli("codex").filter(|p| p.extension().is_some_and(|e| e == "exe")).ok_or("The native Codex CLI was not found.")?;
-        let folder = crate::browser_protocol::root()?.join(format!("screen-{}", new_id()));
-        std::fs::create_dir(&folder).map_err(err)?; let _temporary = Temporary(folder.clone());
+        let _temporary = Temporary::create(&crate::browser_protocol::root()?, "screen")?;
+        let folder = &_temporary.0;
         let image = folder.join("screen.png"); std::fs::write(&image, png).map_err(err)?;
         let schema = folder.join("schema.json"); let answer = folder.join("answer.json");
         crate::browser_protocol::atomic(&schema, &json!({"type":"object","additionalProperties":false,"properties":{"explanation":{"type":"string"},"answer":{"type":"string"},"controlId":{"type":["integer","null"]}},"required":["explanation","answer","controlId"]}))?;
@@ -623,6 +633,37 @@ pub async fn screen_explain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_ai_request_creates_missing_parents_and_cleans_only_its_own_files() {
+        let base = std::env::temp_dir().join(format!("buddy-first-request-{}", new_id()));
+        let root = base.join("fresh-install/browser-fill");
+        assert!(!root.exists());
+        for kind in ["screen", "quick"] {
+            let temporary = Temporary::create(&root, kind).unwrap();
+            let folder = temporary.0.clone();
+            assert!(folder.is_dir());
+            for name in ["screen.png", "schema.json", "answer.json"] {
+                std::fs::write(folder.join(name), b"synthetic fixture").unwrap();
+            }
+            let sibling = root.join("keep-reference.txt");
+            std::fs::write(&sibling, b"keep").unwrap();
+            drop(temporary);
+            assert!(!folder.exists());
+            assert_eq!(std::fs::read(&sibling).unwrap(), b"keep");
+            std::fs::remove_file(sibling).unwrap();
+        }
+        std::fs::remove_dir(&root).unwrap();
+        std::fs::remove_dir(root.parent().unwrap()).unwrap();
+        std::fs::remove_dir(base).unwrap();
+    }
+    #[test]
+    fn request_directory_errors_identify_the_failed_stage() {
+        let file = std::env::temp_dir().join(format!("buddy-request-file-{}", new_id()));
+        std::fs::write(&file, b"fixture").unwrap();
+        let error = Temporary::create(&file.join("browser-fill"), "screen").err().unwrap();
+        assert!(error.contains("AI request directory"));
+        std::fs::remove_file(file).unwrap();
+    }
     #[test]
     fn automatic_typing_uses_unicode_text_without_enter_or_shortcut_keys() {
         let inputs = typing_inputs("answer\nλ😀").unwrap();
