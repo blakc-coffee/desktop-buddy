@@ -17,7 +17,7 @@
   <ellipse cx="31" cy="83" rx="7.5" ry="7" fill="#313739"/>
   <ellipse cx="55" cy="79" rx="8" ry="7" fill="#313739"/>
   <g id="sleep-eyes"><path d="M27 83 Q31 87 35 82 M51 79 Q55 83 59 78" fill="none" stroke="#fffaf0" stroke-width="1.5"/></g>
-  <g id="awake-eyes"><ellipse cx="31" cy="82.5" rx="2.2" ry="2.6" fill="#fffaf0"/><ellipse cx="55" cy="78.5" rx="2.2" ry="2.6" fill="#fffaf0"/></g>
+  <g id="awake-eyes" display="none"><ellipse cx="31" cy="82.5" rx="2.2" ry="2.6" fill="#fffaf0"/><ellipse cx="55" cy="78.5" rx="2.2" ry="2.6" fill="#fffaf0"/></g>
   <path d="M38 90 Q42 88 46 89 L43 93Z M43 93 Q41 96 38 94 M43 93 Q46 95 48 93" fill="#313739" stroke="#313739" stroke-width="0.8"/>
   <path d="M43 99 Q47 92 57 93 Q66 94 68 100 Q66 105 56 105 L46 104 Q41 103 43 99Z" fill="#313739"/>
   <path d="M52 100 L52 103 M57 99 L58 103" fill="none" stroke="#59605d" stroke-width="1"/>
