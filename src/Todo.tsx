@@ -123,7 +123,13 @@ export default function Todo() {
         {[...items]
           .sort((a, b) => Number(a.done) - Number(b.done))
           .map((item) => (
-            <TodoRow key={item.id} item={item} busy={busy} save={save} />
+            <TodoRow
+              key={item.id}
+              item={item}
+              busy={busy}
+              save={save}
+              allowRemove
+            />
           ))}
       </div>
     </main>

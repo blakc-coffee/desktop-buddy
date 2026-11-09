@@ -1,7 +1,7 @@
 use super::*;
 use base64::Engine;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use windows::Win32::{
     Foundation::*,
@@ -15,6 +15,9 @@ pub struct ScreenState {
     cancel: AtomicBool,
     capture: Mutex<Option<Capture>>,
     result: Mutex<Value>,
+    generation: AtomicU64,
+    suppressed: AtomicBool,
+    presented: AtomicU64,
 }
 struct Capture {
     id: String,
@@ -119,6 +122,8 @@ fn begin(state: &Arc<ScreenState>) -> Result<Busy, String> {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .map_err(|_| "A screen action is already running.")?;
     state.cancel.store(false, Ordering::SeqCst);
+    state.suppressed.store(false, Ordering::SeqCst);
+    state.generation.fetch_add(1, Ordering::SeqCst);
     Ok(Busy(state.clone()))
 }
 fn encode(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
@@ -312,15 +317,17 @@ pub fn screen_result(state: tauri::State<Arc<ScreenState>>) -> Result<Value, Str
     Ok(state.result.lock().map_err(err)?.clone())
 }
 pub(crate) fn show_bubble(app: &tauri::AppHandle) {
+    if app.state::<Arc<ScreenState>>().suppressed.load(Ordering::SeqCst) {return;}
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        let created=handle.get_webview_window("explanation").is_none();
         let window = if let Some(window) = handle.get_webview_window("explanation") {
             Ok(window)
         } else {
             tauri::WebviewWindowBuilder::new(
                 &handle,
                 "explanation",
-                tauri::WebviewUrl::App("index.html?surface=explanation".into()),
+                tauri::WebviewUrl::App("explanation.html".into()),
             )
             .title("Kitty · Explanation")
             .inner_size(360.0, 120.0)
@@ -348,12 +355,12 @@ pub(crate) fn show_bubble(app: &tauri::AppHandle) {
             crate::pet::explaining(&handle, true);
             let on_close = handle.clone();
             let watched = window.clone();
-            window.on_window_event(move |event| {
+            if created {crate::surfaces::retain(&handle,&window);window.on_window_event(move |event| {
                 if matches!(event, tauri::WindowEvent::Destroyed) { crate::pet::explaining(&on_close, false); crate::pet::watch_bubble(&on_close,0); }
                 if matches!(event, tauri::WindowEvent::Focused(false)) {
-                    if watched.is_visible().unwrap_or(false) {let _=watched.close();}
+                    if watched.is_visible().unwrap_or(false) {dismiss_presentation(&on_close);let _=watched.close();}
                 }
-            });
+            });}
             // Remain hidden until bubble_present receives the content dimensions.
         }
     });
@@ -363,7 +370,10 @@ pub fn screen_clear(
     app: tauri::AppHandle,
     state: tauri::State<Arc<ScreenState>>,
 ) -> Result<(), String> {
-    let _guard = begin(state.inner())?;
+    state.cancel.store(true,Ordering::SeqCst);
+    state.suppressed.store(true,Ordering::SeqCst);
+    state.generation.fetch_add(1,Ordering::SeqCst);
+    app.state::<Arc<crate::warm_ai::WarmState>>().clear();
     *state.capture.lock().map_err(err)? = None;
     *state.result.lock().map_err(err)? = Value::Null;
     if let Some(bubble) = app.get_webview_window("explanation") {
@@ -406,7 +416,13 @@ pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), Strin
     start_loading(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
+        let generation=owned.generation.load(Ordering::SeqCst);
         let result = (|| -> Result<Value, String> {
+            match warm_answer(&app,&owned,generation,None,None,&question,"gpt-6-luna","none","Quick answer") {
+                Ok(text)=>return Ok(json!({"title":"Quick answer","question":question,"busy":false,"explanation":text})),
+                Err(error) if !error.submitted && !owned.cancel.load(Ordering::SeqCst)=>{},
+                Err(error)=>return Err(error.message),
+            }
             let cli=resolve_cli("codex").filter(|p|p.extension().is_some_and(|e|e=="exe")).ok_or("Install and sign in to Codex with your ChatGPT account to connect quick answers.")?;
             let _temporary = Temporary::create(&crate::browser_protocol::root()?, "quick")?;
             let folder = &_temporary.0;
@@ -517,6 +533,7 @@ pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), Strin
         let value = result.unwrap_or_else(
             |error| json!({"title":"Quick answer","question":question,"busy":false,"error":error}),
         );
+        if owned.suppressed.load(Ordering::SeqCst)||owned.generation.load(Ordering::SeqCst)!=generation {crate::pet::thinking(&app,false);return;}
         if let Ok(mut saved) = owned.result.lock() {
             *saved = value;
         }
@@ -563,11 +580,26 @@ pub async fn screen_explain(
         let cli = resolve_cli("codex").filter(|p| p.extension().is_some_and(|e| e == "exe")).ok_or("The native Codex CLI was not found.")?;
         let _temporary = Temporary::create(&crate::browser_protocol::root()?, "screen")?;
         let folder = &_temporary.0;
-        let image = folder.join("screen.png"); std::fs::write(&image, png).map_err(err)?;
+        let image = folder.join("screen.png"); std::fs::write(&image, &png).map_err(err)?;
         let schema = folder.join("schema.json"); let answer = folder.join("answer.json");
         crate::browser_protocol::atomic(&schema, &json!({"type":"object","additionalProperties":false,"properties":{"explanation":{"type":"string"},"answer":{"type":"string"},"controlId":{"type":["integer","null"]}},"required":["explanation","answer","controlId"]}))?;
         let controls = { let capture = owned.capture.lock().map_err(err)?; serde_json::to_string(&capture.as_ref().ok_or("Capture cleared")?.controls).map_err(err)? };
         let prompt = screen_prompt(&question, fill, &controls)?;
+        if !fill {
+            let generation=owned.generation.load(Ordering::SeqCst);
+            let (chosen,effort)=screen_profile(&model,false);
+            match warm_answer(&app,&owned,generation,Some(image.clone()),Some(png),&question,chosen.unwrap_or("gpt-6-luna"),effort,"Explanation") {
+                Ok(text)=>{
+                    current(&owned,&capture_id)?;
+                    if owned.cancel.load(Ordering::SeqCst)||owned.suppressed.load(Ordering::SeqCst){return Err("Question cancelled".into());}
+                    let value=json!({"title":"Explanation","question":question,"captureId":capture_id,"requestedModel":model,"busy":false,"streaming":false,"explanation":text,"answer":"","controlId":null});
+                    *owned.result.lock().map_err(err)?=value.clone();let _=app.emit("screen-result",());crate::pet::thinking(&app,false);
+                    if compact.unwrap_or(false){show_bubble(&app);}return Ok(value);
+                },
+                Err(error) if !error.submitted && !owned.cancel.load(Ordering::SeqCst)=>{},
+                Err(error)=>return Err(error.message),
+            }
+        }
         use std::os::windows::process::CommandExt;
         let mut process = Command::new(cli);
         process.args(["exec", "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image", "--disable", "skill_search", "--disable", "plugins", "--disable", "apps", "--disable", "browser_use", "--disable", "browser_use_external", "--disable", "in_app_browser", "--disable", "image_generation", "--disable", "multi_agent", "--disable", "multi_agent_v2", "--config", "web_search=\"disabled\"", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never"]);
@@ -770,6 +802,7 @@ pub fn run_command(app: tauri::AppHandle, question: String, fill: bool) {
         }.await;
         if let Err(error) = result {
             crate::pet::thinking(&app,false);
+            if app.state::<Arc<ScreenState>>().suppressed.load(Ordering::SeqCst){return;}
             if fill {
                 crate::pet::cue(&app, crate::pet_art::Cue::AgentAttention);
                 crate::pet::explaining(&app, false);
@@ -796,12 +829,20 @@ fn screen_prompt(question: &str, fill: bool, controls: &str) -> Result<String,St
 }
 
 fn start_loading(app: &tauri::AppHandle) {
-    if let Some(window)=app.get_webview_window("explanation") {let _=window.close();}
+    let state=app.state::<Arc<ScreenState>>();state.presented.store(0,Ordering::SeqCst);
+    *state.result.lock().unwrap_or_else(|e|e.into_inner())=json!({"busy":true,"explanation":""});
+    if let Some(window)=app.get_webview_window("explanation") {let _=window.hide();}
+    let _=app.emit("screen-result",());
     crate::pet::thinking(app,true);
+    show_bubble(app);
 }
 #[tauri::command]
 pub fn bubble_present(app:tauri::AppHandle,window:tauri::WebviewWindow,width:f64,height:f64)->Result<Value,String> {
     if window.label()!="explanation" || !width.is_finite() || !height.is_finite() {return Err("Invalid bubble layout".into());}
+    let state=app.state::<Arc<ScreenState>>();
+    let ready={let result=state.result.lock().map_err(err)?; result["explanation"].as_str().is_some_and(|text|!text.is_empty()) || !result["error"].is_null()};
+    if state.suppressed.load(Ordering::SeqCst) || !ready {return Err("Answer is not ready".into());}
+    state.presented.store(state.generation.load(Ordering::SeqCst),Ordering::SeqCst);
     let width=width.clamp(300.0,380.0);let height=height.clamp(100.0,360.0);
     window.set_size(tauri::LogicalSize::new(width,height)).map_err(err)?;
     let mut anchor=json!({"side":"left","tail":50});
@@ -810,8 +851,7 @@ pub fn bubble_present(app:tauri::AppHandle,window:tauri::WebviewWindow,width:f64
             window.set_position(tauri::PhysicalPosition::new(x,y)).map_err(err)?;anchor=json!({"side":side,"tail":tail});
         }
     }
-    if !window.is_visible().map_err(err)? {window.show().map_err(err)?;window.set_focus().map_err(err)?;}
-    if let Ok(hwnd)=window.hwnd() {crate::pet::watch_bubble(&app,hwnd.0 as isize);}
+    if !window.is_visible().map_err(err)? {window.show().map_err(err)?;window.set_focus().map_err(err)?;if let Ok(hwnd)=window.hwnd() {crate::pet::watch_bubble(&app,hwnd.0 as isize);}}
     Ok(anchor)
 }
 
@@ -829,6 +869,7 @@ pub async fn bubble_followup(app:tauri::AppHandle,state:tauri::State<'_,Arc<Scre
         let owned=state.inner().clone();
         let result=screen_explain(app.clone(),state,id.into(),previous["requestedModel"].as_str().unwrap_or("").into(),context.clone(),false,Some(true)).await;
         if let Err(error)=result {
+            if owned.suppressed.load(Ordering::SeqCst){return Ok(());}
             if owned.busy.load(Ordering::SeqCst) {return Err(error);}
             crate::pet::thinking(&app,false);
             let value=followup_failure(&previous,&context,&error);
@@ -849,4 +890,25 @@ fn screen_profile(requested:&str,fill:bool)->(Option<&str>,&'static str) {
     if !requested.is_empty() {(Some(requested),"low")}
     else if fill {(None,"low")}
     else {(Some("gpt-6-luna"),"none")}
+}
+
+#[tauri::command]
+pub fn ai_prepare(app:tauri::AppHandle){app.state::<Arc<crate::warm_ai::WarmState>>().prepare(&app);}
+pub fn dismiss_presentation(app:&tauri::AppHandle){
+    let state=app.state::<Arc<ScreenState>>();
+    if state.presented.load(Ordering::SeqCst)==state.generation.load(Ordering::SeqCst){state.suppressed.store(true,Ordering::SeqCst);state.cancel.store(true,Ordering::SeqCst);}
+}
+#[tauri::command]
+pub fn bubble_dismiss(app:tauri::AppHandle){dismiss_presentation(&app);if let Some(window)=app.get_webview_window("explanation"){let _=window.close();}}
+fn warm_answer(app:&tauri::AppHandle,state:&Arc<ScreenState>,generation:u64,image:Option<PathBuf>,bytes:Option<Vec<u8>>,question:&str,model:&str,effort:&str,title:&str)->Result<String,crate::warm_ai::Failure>{
+    let check=state.clone();let stream=state.clone();let handle=app.clone();let heading=title.to_string();let prompt=if image.is_some(){format!("Answer this question using the image. Return only answer text, no JSON. Question/context: {}",serde_json::to_string(question).unwrap_or_default())}else{question.to_string()};
+    app.state::<Arc<crate::warm_ai::WarmState>>().run(app.state::<Shared>().inner().clone(),crate::warm_ai::Request{
+        image,image_bytes:bytes,prompt,question:question.into(),model:model.into(),effort:effort.into(),
+        cancelled:Box::new(move||check.cancel.load(Ordering::SeqCst)||check.suppressed.load(Ordering::SeqCst)||check.generation.load(Ordering::SeqCst)!=generation),
+        publish:Box::new(move|text,first|{
+            if stream.cancel.load(Ordering::SeqCst)||stream.suppressed.load(Ordering::SeqCst)||stream.generation.load(Ordering::SeqCst)!=generation{return;}
+            if let Ok(mut result)=stream.result.lock(){*result=json!({"title":heading,"explanation":text,"busy":true,"streaming":true});}
+            let _=handle.emit("screen-result",());if first{show_bubble(&handle);}
+        }),
+    })
 }

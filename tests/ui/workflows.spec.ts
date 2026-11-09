@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { installFixture } from "./fixture";
 async function go(page: Page, label: string) {
+  await page.locator(".nav-item").first().waitFor({state:"attached"});
   const toggle = page.getByRole("button", { name: /^Tools/ });
   if (
     (await toggle.isVisible()) &&
@@ -170,6 +171,7 @@ test("native destinations focus the matching workspace and acknowledge once", as
 test("keyboard can skip chrome and edit a checklist", async ({ page }) => {
   await installFixture(page);
   await page.goto("/");
+  await page.getByRole("heading", { name: "Overview", exact:true }).waitFor();
   await page.keyboard.press("Tab");
   await expect(
     page.getByRole("link", { name: "Skip to content" }),
@@ -282,6 +284,9 @@ test("compact Todo stays editable and accessible", async ({ page }) => {
       exact: true,
     }),
   ).toBeVisible();
+  await page.getByRole("button", {name:"Remove Review the browser-helper setup",exact:true}).click();
+  await expect(page.getByRole("checkbox",{name:"Complete Review the browser-helper setup",exact:true})).toHaveCount(0);
+  await expect(page.getByRole("checkbox",{name:"Complete Write the complexity analysis",exact:true})).toBeVisible();
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();
@@ -580,6 +585,19 @@ test("compact bubble scrolls long answers, sends follow-ups, and dismisses outsi
   await page.getByLabel("Follow-up question").fill("Explain with an example");await page.getByRole("button",{name:"Send follow-up",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="bubble_followup").length)).toBe(1);
   await page.mouse.click(1,1);
-  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="plugin:window|close").length)).toBeGreaterThan(0);
+  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.command==="bubble_dismiss").length)).toBeGreaterThan(0);
   const results=await new AxeBuilder({page}).withTags(["wcag2a","wcag2aa","wcag21aa","wcag22aa"]).analyze();expect(results.violations).toEqual([]);
+});
+
+
+test("dedicated popup entries exclude dashboard modules and allow streamed answers",async({page})=>{
+ await installFixture(page);await page.goto("/todo.html");
+ await expect(page.getByRole("heading",{name:"Todo",exact:true})).toBeVisible();
+ expect(await page.evaluate(()=>performance.getEntriesByType("resource").some(entry=>entry.name.includes("/src/App.tsx")))).toBe(false);
+ await page.addInitScript(()=>{(window as any).fixtureScreenResult={title:"Explanation",busy:true,streaming:true,explanation:"A complete first sentence."};});
+ await page.goto("/explanation.html");await expect(page.getByText("A complete first sentence.",{exact:true})).toBeVisible();
+ await expect(page.getByLabel("Follow-up question")).toBeDisabled();
+ await page.evaluate(()=>{(window as any).fixtureScreenResult={title:"Explanation",busy:false,explanation:"A complete first sentence. The rest follows."};(window as any).fixtureEmit("screen-result",null);});
+ await expect(page.getByLabel("Follow-up question")).toBeEnabled();
+ expect(await page.evaluate(()=>performance.getEntriesByType("resource").some(entry=>entry.name.includes("/src/App.tsx")))).toBe(false);
 });

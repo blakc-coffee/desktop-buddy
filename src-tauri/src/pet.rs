@@ -139,7 +139,8 @@ unsafe extern "system" fn bubble_mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRE
         let point=(*(lp.0 as *const MSLLHOOKSTRUCT)).pt;
         STATE.with(|state| { if let Ok(state)=state.try_borrow() { if let Some(window)=state.as_ref().and_then(|state|state.bubble_window) {
             let mut rect=RECT::default();
-            if IsWindowVisible(window).as_bool() && GetWindowRect(window,&mut rect).is_ok() && outside_bubble(point,rect) { let _=PostMessageW(Some(window),WM_CLOSE,WPARAM(0),LPARAM(0)); }
+            if IsWindowVisible(window).as_bool() && GetWindowRect(window,&mut rect).is_ok() && outside_bubble(point,rect) { if let Some(state)=state.as_ref(){crate::screen_helper::dismiss_presentation(&state.app);}
+                let _=PostMessageW(Some(window),WM_CLOSE,WPARAM(0),LPARAM(0)); }
         } } });
     }
     // Never consume the click: it still reaches the application beneath it.

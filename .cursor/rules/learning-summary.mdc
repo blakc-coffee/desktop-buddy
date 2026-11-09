@@ -1,0 +1,14 @@
+---
+description: Explain project changes so the user learns the underlying computer-science concepts.
+alwaysApply: true
+---
+
+# Learn while building
+
+For every completed change batch in this project, include a concise learning summary:
+- Explain what changed and why, using one relevant CS concept in plain language.
+- Link to the key code and describe the important data/control flow.
+- Explain how the change was tested or measured, including meaningful limits.
+- Offer one small optional exercise the user can try; do not block delivery on it.
+- Distinguish measured results from assumptions; avoid unexplained jargon.
+- Keep notes proportional to the change. Do not replace implementation with a lecture.

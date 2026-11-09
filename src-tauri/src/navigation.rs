@@ -47,21 +47,24 @@ pub fn open(app: tauri::AppHandle, destination: Destination) {
         }
     });
 }
-pub fn todo(app: tauri::AppHandle, palette: crate::pet_art::Palette) {
+pub fn todo(app: tauri::AppHandle, palette: crate::pet_art::Palette) { todo_window(app,palette,true); }
+pub fn prepare(app: &tauri::AppHandle) { todo_window(app.clone(),crate::pet::appearance().palette(),false); }
+fn todo_window(app: tauri::AppHandle, palette: crate::pet_art::Palette, visible:bool) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         let css = |color: windows::Win32::Foundation::COLORREF| format!("#{:02x}{:02x}{:02x}", color.0 & 255, (color.0 >> 8) & 255, (color.0 >> 16) & 255);
         let script = format!("window.__BUDDY_SURFACE__='todo';window.__BUDDY_PALETTE__={};", serde_json::json!({"surface":css(palette.surface),"ink":css(palette.ink),"accent":css(palette.accent),"selection":css(palette.selection),"outline":css(palette.outline)}));
         if let Some(window) = handle.get_webview_window("todo") {
             let _ = window.eval(&format!("{}window.dispatchEvent(new Event('buddy-palette'));", script));
-            let _ = window.show();
-            let _ = window.set_focus();
+            crate::surfaces::touch(&handle,"todo");
+            if visible {let _ = window.show();let _ = window.set_focus();}
             return;
         }
-        if let Err(error) = tauri::WebviewWindowBuilder::new(&handle, "todo", tauri::WebviewUrl::App("index.html".into()))
+        match tauri::WebviewWindowBuilder::new(&handle, "todo", tauri::WebviewUrl::App("todo.html".into()))
             .title("Todo").inner_size(360.0, 420.0).min_inner_size(300.0, 280.0)
-            .initialization_script(&script).build() {
-            if let Ok(mut warning) = handle.state::<Shared>().warning.lock() { *warning = Some(format!("Could not open Todo: {error}")); }
+            .visible(visible).focused(visible).initialization_script(&script).build() {
+          Ok(window)=>crate::surfaces::retain(&handle,&window),
+          Err(error)=>{if let Ok(mut warning) = handle.state::<Shared>().warning.lock() { *warning = Some(format!("Could not open Todo: {error}")); }}
         }
     });
 }

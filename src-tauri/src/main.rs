@@ -7,9 +7,11 @@ mod drop_data;
 mod finder;
 mod model;
 mod navigation;
+mod surfaces;
 mod browser_protocol;
 mod browser_fill;
 mod screen_helper;
+mod warm_ai;
 mod screen_controls;
 mod chat_bubble;
 mod screen_region;
@@ -594,7 +596,11 @@ async fn codex_read(
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move||{
         let path=resolve_cli("codex").ok_or("Codex CLI was not found in PATH.")?;
-        let mut workers=owned.workers.lock().map_err(err)?;if !workers.is_empty(){return Err("A session read is already running.".into())}
+        static READING:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+        if READING.swap(true,std::sync::atomic::Ordering::SeqCst){return Err("A catalog read is already running.".into());}
+        struct CatalogGuard;impl Drop for CatalogGuard{fn drop(&mut self){READING.store(false,std::sync::atomic::Ordering::SeqCst);}}
+        let _catalog=CatalogGuard;
+        let mut workers=owned.workers.lock().map_err(err)?;
         let child=Arc::new(Mutex::new(spawn_cli(&path,&["app-server"])?));workers.push(child.clone());drop(workers);
         let result=(||->Result<serde_json::Value,String>{
             let mut process=child.lock().map_err(err)?;let mut input=process.stdin.take().ok_or("Cannot open Codex input")?;let output=process.stdout.take().ok_or("Cannot open Codex output")?;drop(process);
@@ -619,6 +625,7 @@ fn show_panel(app: &tauri::AppHandle) {
     if let Some(cfg) = app.config().app.windows.first() {
         match tauri::WebviewWindowBuilder::from_config(app, cfg).and_then(|b| b.build()) {
             Ok(w) => {
+                surfaces::retain(app,&w);
                 let _ = w.set_focus();
             }
             Err(e) => {
@@ -750,8 +757,10 @@ fn initialize(path: &Path) -> Result<Connection, String> {
 fn main() {
     tauri::Builder::default()
         .manage(navigation::Navigation::default())
+        .manage(surfaces::Surfaces::default())
         .manage(Arc::new(browser_fill::BrowserState::default()))
         .manage(Arc::new(screen_helper::ScreenState::default()))
+        .manage(Arc::new(warm_ai::WarmState::default()))
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|a| a == "--quit") {
                 request_quit(app)
@@ -790,6 +799,8 @@ fn main() {
             screen_helper::screen_result,
             screen_helper::bubble_present,
             screen_helper::bubble_followup,
+            screen_helper::ai_prepare,
+            screen_helper::bubble_dismiss,
             screen_helper::screen_explain,
             screen_helper::screen_clear,
             screen_helper::screen_cancel,
@@ -861,6 +872,7 @@ fn main() {
                 agents: Mutex::new(std::collections::HashMap::new()),
             });
             app.manage(core.clone());
+            surfaces::start(app.handle().clone());
             let mut unavailable = Vec::new();
             for shortcut in ["Ctrl+Alt+P", "Ctrl+Alt+Space"] {
                 if let Err(e) = app.global_shortcut().register(shortcut) {
@@ -934,6 +946,7 @@ fn main() {
                     }
                 }
             }
+            crate::navigation::prepare(app.handle());
             if std::env::args().any(|a| a == "--panel") {
                 show_panel(app.handle());
             }
@@ -949,6 +962,7 @@ fn main() {
                 code: None, api, ..
             } => api.prevent_exit(),
             tauri::RunEvent::Exit => {
+                if let Some(warm)=app.try_state::<Arc<warm_ai::WarmState>>() {warm.stop();}
                 pet::stop(app);
                 if let Some(core) = app.try_state::<Shared>() {
                     if let Ok(workers) = core.workers.lock() {

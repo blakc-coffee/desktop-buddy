@@ -1512,6 +1512,8 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_mouse), module, 0).ok();
     change(|bar| bar.click_hook = hook);
     crate::pet::bar_visibility(app, IsWindowVisible(hwnd).as_bool());
+    app.state::<Arc<crate::warm_ai::WarmState>>().prepare(app);
+    crate::navigation::prepare(app);
 }
 
 unsafe fn work_area(pet: HWND) -> RECT {
