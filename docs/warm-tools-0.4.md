@@ -22,7 +22,7 @@ Implemented November 10, 2026. The user explicitly overrode the usage guard for 
 - 17 headless UI workflows pass; four previously archived workflows remain skipped. Coverage includes desktop/narrow layouts, light/dark themes, keyboard navigation, accessibility, Remove, streaming, dismissal, follow-ups, and dedicated bundle isolation.
 - Synthetic Todo (300 px), tools (1100 px), and scrollable answer (380 px) previews were inspected. No user screen was captured or operated.
 - Two synthetic plain questions on the prepared process: 4024/3925 ms to first sentence, 4025/3925 ms total. One synthetic screenshot request including cold worker preparation: 5031 ms; identical repeat: <1 ms. These small samples are not guarantees or an apples-to-apples speed benchmark against different previous prompts.
-- Prepared worker working set: 117,841,920 bytes (112.4 MiB), excluding Buddy and WebView2. Idle cleanup was verified after 47 seconds. Native popup cold/reopen timing and the complete app process-tree memory budget were not measured in this batch; WebView startup and provider latency remain variable.
+- Prepared worker working set: 117,841,920 bytes (112.4 MiB), excluding Buddy and WebView2. Idle cleanup was verified after 47 seconds. A later idle snapshot of the running packaged release measured 24.4 MiB for Buddy with no descendant WebView2/AI processes. This is one idle working-set sample, not the active peak memory budget. Native popup cold/reopen timing was not measured in this batch; WebView startup and provider latency remain variable.
 
 ## Decision record
 
