@@ -88,5 +88,5 @@ for appearance, filename in [("Cat", "tuxedo"), ("Calico", "calico"), ("Dog", "s
     lines.append(f"        Appearance::{appearance} => {{")
     lines.extend(f"            {line}" for line in draw(ET.parse(assets / f"{filename}.svg").getroot()))
     lines.append("        }")
-lines.extend(["    }", "}", ""])
+lines.extend(["        _ => draw_final_art(canvas, appearance.family(), awake),", "    }", "}", ""])
 (root / "src-tauri/src/pet_final.rs").write_text("\n".join(lines), encoding="utf-8")

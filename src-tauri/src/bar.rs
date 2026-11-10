@@ -304,13 +304,13 @@ unsafe fn refresh() {
         }
         Ok(Parsed::Copy) => choices(vec![(String::new(), Action::Copy)]),
         Ok(Parsed::Pets) => {
-            use crate::pet_art::Appearance::*;
             let current = pet::appearance();
             change(|bar| bar.finder = true);
             choices(
-                [(Calico, "Calico"), (Dog, "Shiba Inu"), (Panda, "Panda")]
+                crate::pet::APPEARANCES
                     .into_iter()
-                    .map(|(pet, label)| {
+                    .map(|pet| {
+                        let label=pet.label();
                         let label = if pet == current {
                             format!("{label} · Current")
                         } else {

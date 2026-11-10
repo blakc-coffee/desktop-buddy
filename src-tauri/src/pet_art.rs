@@ -22,6 +22,7 @@ pub enum Appearance {
     Calico,
     Panda,
     Husky,
+    Siamese, BlueCat, Dachshund, Samoyed, Collie, RedPanda, Otter, Capybara,
 }
 
 pub const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
@@ -36,6 +37,7 @@ impl Appearance {
             Self::Calico => "calico",
             Self::Panda => "panda",
             Self::Husky => "husky",
+            Self::Siamese=>"siamese",Self::BlueCat=>"blue-cat",Self::Dachshund=>"dachshund",Self::Samoyed=>"samoyed",Self::Collie=>"collie",Self::RedPanda=>"red-panda",Self::Otter=>"otter",Self::Capybara=>"capybara",
         }
     }
 
@@ -44,12 +46,17 @@ impl Appearance {
             "dog" => Self::Dog,
             "calico" => Self::Calico,
             "panda" => Self::Panda,
+            "siamese"=>Self::Siamese,"blue-cat"=>Self::BlueCat,"dachshund"=>Self::Dachshund,"samoyed"=>Self::Samoyed,"collie"=>Self::Collie,"red-panda"=>Self::RedPanda,"otter"=>Self::Otter,"capybara"=>Self::Capybara,
             _ => Self::Calico,
         }
     }
 
+    pub fn label(self)->&'static str {match self {Self::Siamese=>"Siamese",Self::BlueCat=>"Blue shorthair",Self::Dachshund=>"Dachshund",Self::Samoyed=>"Samoyed",Self::Collie=>"Border collie",Self::RedPanda=>"Red panda",Self::Otter=>"Otter",Self::Capybara=>"Capybara",Self::Dog=>"Shiba Inu",Self::Panda=>"Panda",_=>"Calico"}}
+    pub fn family(self)->Self {match self {Self::Siamese|Self::BlueCat=>Self::Calico,Self::Dachshund|Self::Samoyed|Self::Collie=>Self::Dog,Self::RedPanda|Self::Otter|Self::Capybara=>Self::Panda,_=>self}}
+    pub fn token(self)->&'static str {match self {Self::RedPanda=>"apple",Self::Otter=>"clam",Self::Capybara=>"leaf",Self::Panda=>"bamboo",_ if self.family()==Self::Dog=>"bone",_=>"fish"}}
     /// Application chrome and UI theme palette.
     pub fn palette(self) -> Palette {
+        if self.family()!=self {let mut palette=self.family().palette();palette.accent=match self {Self::Siamese=>rgb(165,188,204),Self::BlueCat=>rgb(172,175,194),Self::Dachshund=>rgb(207,157,117),Self::Samoyed=>rgb(211,202,214),Self::Collie=>rgb(210,209,196),Self::RedPanda=>rgb(211,145,104),Self::Otter=>rgb(185,151,115),_=>rgb(189,170,122)};return palette;}
         match self {
             Self::Cat => Palette {
                 surface: rgb(43, 30, 49),
@@ -86,6 +93,7 @@ impl Appearance {
                 outline: rgb(74, 94, 128),
                 selection: rgb(50, 66, 95),
             },
+            _=>unreachable!("new pets use family palettes"),
         }
     }
 }
@@ -1821,6 +1829,10 @@ impl Appearance {
             Self::Calico => &CALICO_SETS,
             Self::Panda => &PANDA_SETS,
             Self::Husky => &HUSKY_SETS,
+            Self::Siamese|Self::BlueCat=>&CAT_SETS,
+            Self::Dachshund|Self::Samoyed|Self::Collie=>&DOG_SETS,
+            Self::RedPanda=>&CALICO_SETS,
+            Self::Otter|Self::Capybara=>&PANDA_SETS,
         }
     }
 
@@ -1946,12 +1958,14 @@ impl Canvas {
 }
 
 include!("pet_final.rs");
+include!("pet_quiet.rs");
 
 /// Species-specific Todo control, drawn in the pet's logical 96-DPI space.
 pub unsafe fn draw_todo_icon(dc: HDC, appearance: Appearance, due: bool) {
     use ArtPath::*;
     let canvas = Canvas { dc, dpi: 96 };
-    match appearance {
+    if draw_quiet_token(&canvas,appearance,due){return;}
+    match appearance.family() {
         Appearance::Dog | Appearance::Husky => {
             let edge = rgb(134, 69, 46);
             let cream = if due {
@@ -2141,6 +2155,7 @@ pub unsafe fn draw_pose(
     cue: Option<Cue>,
 ) { draw_pose_accessory(dc, appearance, hover, dpi, pose, file_motion, awake, cue, false); }
 pub unsafe fn draw_pose_accessory(dc: HDC, appearance: Appearance, hover: bool, dpi: i32, pose: PoseKeyframe, file_motion: Option<(i32,i32)>, awake: bool, cue: Option<Cue>, nerdy: bool) {
+    let pose=appearance.context_pose(pose,cue);
     let saved = SaveDC(dc);
     let pixel = dpi as f32 / 96.0;
     let angle = f32::from(pose.rotation_deg).to_radians();
@@ -2164,13 +2179,13 @@ pub unsafe fn draw_pose_accessory(dc: HDC, appearance: Appearance, hover: bool, 
 
     SetPolyFillMode(dc, WINDING);
     let canvas = Canvas { dc, dpi };
-    draw_final_art(&canvas, appearance, awake || nerdy);
+    if !draw_quiet_pet(&canvas,appearance,awake || nerdy,pose){draw_final_art(&canvas, appearance, awake || nerdy);}
     if nerdy { draw_glasses(dc, appearance, dpi); }
     if let Some((file_x, file_y)) = file_motion {
         use ArtPath::*;
         let palette = appearance.palette();
-        let x = file_x + if appearance == Appearance::Panda { 90 } else { 0 };
-        let y = file_y;
+        let x = file_x + match appearance {Appearance::Panda=>90,Appearance::Otter=>200,Appearance::Capybara=>100,_=>0};
+        let y = file_y + match appearance {Appearance::Otter=>110,Appearance::Capybara=>40,_=>0};
         let move_to = |px, py| Move(px + x, py + y);
         let line_to = |px, py| Line(px + x, py + y);
         canvas.path(
@@ -2240,10 +2255,14 @@ pub unsafe fn draw_glasses(dc: HDC, appearance: Appearance, dpi: i32) {
         Appearance::Calico | Appearance::Cat => (550,490,840,480),
         Appearance::Dog | Appearance::Husky => (515,460,840,465),
         Appearance::Panda => (310,825,550,785),
+        Appearance::Dachshund=>(495,520,705,520),
+        Appearance::Otter=>(345,805,540,805),
+        Appearance::Capybara=>(430,530,650,530),
+        _=>(570,480,825,480),
     };
     // Oversized square frames; panda anchors are closer together.
     let ink=rgb(48,33,29);
-    let (w,h,stroke)=if matches!(appearance,Appearance::Panda){(111,96,33)}else{(142,112,39)};
+    let (w,h,stroke)=match appearance {Appearance::Panda=>(111,96,33),Appearance::Otter=>(88,72,28),Appearance::Capybara|Appearance::Dachshund=>(100,85,30),Appearance::Calico|Appearance::Cat|Appearance::Dog|Appearance::Husky=>(142,112,39),_=>(118,96,32)};
     for (cx,cy) in [(x,y),(right,ry)] {
         canvas.path(&[Move(cx-w+40,cy-h),Line(cx+w-40,cy-h),Curve(cx+w-5,cy-h,cx+w,cy-h+24,cx+w,cy-h+46),Line(cx+w,cy+h-46),Curve(cx+w,cy+h-10,cx+w-22,cy+h,cx+w-46,cy+h),Line(cx-w+46,cy+h),Curve(cx-w+10,cy+h,cx-w,cy+h-22,cx-w,cy+h-46),Line(cx-w,cy-h+46),Curve(cx-w,cy-h+12,cx-w+18,cy-h,cx-w+40,cy-h),Close],None,Some(ink),stroke);
         canvas.path(&[Move(cx-w+40,cy-h+33),Line(cx-w+65,cy-h+33),Move(cx-w+31,cy-h+53),Line(cx-w+43,cy-h+40)],None,Some(rgb(255,239,208)),13);

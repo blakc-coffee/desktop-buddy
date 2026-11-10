@@ -2,9 +2,9 @@
 
 Desktop Buddy is a Windows desktop pet and quick launcher for files, projects, timers, to-dos, and reminders. It runs from the system tray. You can use the everyday tools without an AI account or an open Codex window.
 
-![Calico, Shiba Inu, and a sleeping Panda rendered by Buddy](docs/screenshots/pet-lineup.png)
+![Simple pet family rendered by Buddy](docs/screenshots/quiet-pet-family.png)
 
-*Artwork preview rendered by Buddy’s native renderer.*
+*Artwork preview rendered by Buddy’s native renderer. Choose from 11 pets with `/pet` or right-click → Choose pet. [Pet tokens, animation behavior, and validation](docs/quiet-pet-family-0.4.md).*
 
 ## Get started
 

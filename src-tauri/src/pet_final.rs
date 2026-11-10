@@ -99,5 +99,6 @@ unsafe fn draw_final_art(canvas: &Canvas, appearance: Appearance, awake: bool) {
             canvas.path(&[Move(660, 610), Curve(687, 597, 713, 597, 740, 610), Line(700, 650), Close], Some(rgb(48, 60, 80)), None, 10);
             canvas.path(&[Move(700, 650), Curve(687, 677, 667, 683, 640, 670), Move(700, 650), Curve(713, 677, 733, 683, 760, 670)], None, Some(rgb(48, 60, 80)), 12);
         }
+        _=>draw_final_art(canvas,appearance.family(),awake),
     }
 }

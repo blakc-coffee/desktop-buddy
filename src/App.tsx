@@ -386,7 +386,7 @@ export default function App() {
   useEffect(() => {
     if (!data) return;
     document.documentElement.dataset.theme = data.theme;
-    document.documentElement.dataset.pet = ["calico", "dog", "panda"].includes(
+    document.documentElement.dataset.pet = ["calico", "dog", "panda", "siamese", "blue-cat", "dachshund", "samoyed", "collie", "red-panda", "otter", "capybara"].includes(
       data.petAppearance || "",
     )
       ? data.petAppearance

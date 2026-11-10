@@ -2173,3 +2173,10 @@ body:has(.held-preview) { min-width: 280px; }
 .held-preview :focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
 .held-preview button {min-height:32px;flex-shrink:0;}
 .setting-row small {display:block;font-size:12px;color:var(--muted);line-height:1.5;}
+
+:root[data-pet="siamese"] {--accent:#a5bccc;--accent-text:#273943;}
+:root[data-pet="blue-cat"] {--accent:#acafc2;--accent-text:#303344;}
+:root[data-pet="dachshund"],:root[data-pet="red-panda"] {--accent:#d39a74;--accent-text:#3c281e;}
+:root[data-pet="samoyed"],:root[data-pet="collie"] {--accent:#d3cad6;--accent-text:#36303c;}
+:root[data-pet="otter"] {--accent:#b99773;--accent-text:#33271c;}
+:root[data-pet="capybara"] {--accent:#bdaa7a;--accent-text:#322d1e;}

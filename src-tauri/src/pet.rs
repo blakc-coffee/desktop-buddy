@@ -42,7 +42,7 @@ const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
 const NOTICE_TIMER: usize = 4;
-pub const APPEARANCES: [Appearance; 3] = [Appearance::Calico, Appearance::Dog, Appearance::Panda];
+pub const APPEARANCES: [Appearance; 11] = [Appearance::Calico,Appearance::Siamese,Appearance::BlueCat,Appearance::Dachshund,Appearance::Samoyed,Appearance::Collie,Appearance::RedPanda,Appearance::Otter,Appearance::Capybara,Appearance::Dog,Appearance::Panda];
 const WIDTH: i32 = 128;
 const HEIGHT: i32 = 136;
 #[derive(Clone, Default, Serialize)]
@@ -1330,13 +1330,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
                 if let Ok(pets) = CreatePopupMenu() {
-                    for (index, (pet, label)) in [
-                        (Appearance::Calico, w!("Calico")),
-                        (Appearance::Dog, w!("Shiba Inu")),
-                        (Appearance::Panda, w!("Panda")),
-                    ].into_iter().enumerate() {
+                    for (index, pet) in APPEARANCES.into_iter().enumerate() {
+                        let label=wide(pet.label());
                         let flags = MF_STRING | if pet == appearance() { MF_CHECKED } else { MF_UNCHECKED };
-                        let _ = AppendMenuW(pets, flags, 20 + index, label);
+                        let _ = AppendMenuW(pets, flags, 20 + index, PCWSTR(label.as_ptr()));
                     }
                     if AppendMenuW(menu, MF_POPUP, pets.0 as usize, w!("Choose pet")).is_err() {
                         let _ = DestroyMenu(pets);
@@ -1345,9 +1342,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit"));
                 let action = crate::menu_theme::track(menu, hwnd, p.x, p.y, appearance().palette());
                 match action {
-                    20..=22 => {
+                    20..=30 => {
                         if let Some(app) = with_state(|s| s.app.clone()) {
-                            set_appearance(&app, [Appearance::Calico, Appearance::Dog, Appearance::Panda][action as usize - 20]);
+                            set_appearance(&app, APPEARANCES[action as usize - 20]);
                         }
                     }
                     1 => {
@@ -1749,7 +1746,7 @@ mod tests {
     #[test]
     fn render_species_todo_badges_and_idle_held_poses_offscreen() {
         unsafe {
-            let (width, height) = (880, 910);
+            let (width, height) = (880, 3610);
             let dc = CreateCompatibleDC(None);
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -1777,13 +1774,13 @@ mod tests {
                 background,
             );
             let _ = DeleteObject(background.into());
-            for (column, appearance) in [Appearance::Calico, Appearance::Dog, Appearance::Panda]
+            for (index, appearance) in APPEARANCES
                 .into_iter()
                 .enumerate()
             {
                 for row in 0..3 {
                     let saved = SaveDC(dc);
-                    let _ = SetViewportOrgEx(dc, 12 + column as i32 * 290, 12 + row * 300, None);
+                    let _ = SetViewportOrgEx(dc, 12 + (index % 3) as i32 * 290, 12 + ((index / 3) as i32 * 3 + row) * 300, None);
                     let held = row == 1;
                     let pose = if held {
                         AnimationSet::reduced_motion_pose(AnimationPhase::Held)
