@@ -33,6 +33,8 @@ const TEXT_FORMATS: [&str; 7] = [
 ];
 
 pub enum DropData {
+    Text(String),
+    Link(String),
     Paths(Vec<PathBuf>),
     Files(Vec<(String, Vec<u8>)>),
     Download { url: tauri::Url, name: String },
@@ -150,7 +152,7 @@ pub unsafe fn read(data: &IDataObject) -> Result<DropData, String> {
     if let Some(medium) = offered(data, &text) {
         payloads.push((
             "text/uri-list".into(),
-            decode_text(&bytes(&medium, MAX_METADATA)?, true)?,
+            decode_text(&bytes(&medium, 64*1024+2)?, true)?,
         ));
     }
     let mut last_error = None;
@@ -348,6 +350,7 @@ fn local_resource(value: &str) -> Result<PathBuf, String> {
 }
 
 fn parse_text(kind: &str, text: &str) -> Result<DropData, String> {
+    let original=text;
     let text = text.trim();
     if kind.eq_ignore_ascii_case("CodeFiles") || kind.eq_ignore_ascii_case("ResourceURLs") {
         let values: Vec<String> = serde_json::from_str(text).map_err(err)?;
@@ -412,19 +415,16 @@ fn parse_text(kind: &str, text: &str) -> Result<DropData, String> {
         }
         if let Ok(url) = tauri::Url::parse(values[0]) {
             if matches!(url.scheme(), "http" | "https") {
-                return download(values[0], "");
+                return Ok(DropData::Link(values[0].to_string()));
             }
         }
     }
-    if values.is_empty() || values.len() > 20 {
-        return Err("Drop 1–20 files at a time.".into());
+    if values.is_empty() {return Err("There is no text to hold.".into());}
+    if values.len()>20 {return Ok(DropData::Text(original.to_string()));}
+    match values.iter().map(|value|local_resource(value)).collect::<Result<Vec<_>,_>>(){
+        Ok(paths)=>Ok(DropData::Paths(paths)),
+        Err(_)=>Ok(DropData::Text(original.to_string())),
     }
-    Ok(DropData::Paths(
-        values
-            .iter()
-            .map(|value| local_resource(value))
-            .collect::<Result<_, _>>()?,
-    ))
 }
 
 fn download(value: &str, name: &str) -> Result<DropData, String> {
@@ -616,6 +616,8 @@ fn safe_name(name: &str, index: usize) -> Result<String, String> {
 pub fn materialize(data: DropData, root: &Path) -> Result<Vec<PathBuf>, String> {
     let files = match data {
         DropData::Paths(paths) => return Ok(paths),
+        DropData::Text(text) => return crate::held_refs::materialize(text,false,root),
+        DropData::Link(link) => return crate::held_refs::materialize(link,true,root),
         DropData::Files(files) => files,
         DropData::Download { url, name } => vec![fetch(url, name)?],
     };

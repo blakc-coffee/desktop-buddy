@@ -18,6 +18,7 @@ use windows::{
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
     Folder,
+    Link,
     Pdf,
     Text,
     Sheet,
@@ -28,6 +29,7 @@ enum Kind {
     Stack,
 }
 fn kind(path: &Path) -> Kind {
+    if let Some((_,link))=crate::held_refs::describe(path){return if link {Kind::Link}else{Kind::Text};}
     if path.is_dir() {
         return Kind::Folder;
     }
@@ -170,6 +172,9 @@ unsafe fn draw(
         line(13, 0, 13, 5);
         line(13, 5, 18, 5);
         match kind {
+            Kind::Link => {
+                line(5,13,12,6);line(8,6,13,6);line(13,6,13,11);
+            }
             Kind::Sheet => {
                 for y in [8, 12] {
                     line(5, y, 15, y);
@@ -299,9 +304,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let x = lp.0 as i16 as i32;
             let y = (lp.0 >> 16) as i16 as i32;
             let inside = x >= 0 && x < rect.right && y >= 0 && y < rect.bottom;
+            let mut preview=None;
             let toggle = HALO.with(|h| {
                 let mut h = h.borrow_mut();
                 let pressed = h.press.take();
+                if inside && pressed.is_some_and(|(window,_)|window==hwnd){if let Some(node)=h.nodes.iter().find(|node|node.window==hwnd){if let Some(path)=&node.path {preview=Some((path.clone(),node.generation));}}}
                 if inside
                     && pressed.is_some_and(|(window, _)| window == hwnd)
                     && h.nodes.iter().any(|n| n.window == hwnd && n.path.is_none())
@@ -313,9 +320,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }
             });
             let _ = ReleaseCapture();
-            if toggle {
-                refresh();
-            }
+            if toggle {refresh();}
+            if let Some((path,generation))=preview{crate::pet::preview_held(path,generation);}
             LRESULT(0)
         }
         WM_CAPTURECHANGED => {
@@ -446,6 +452,7 @@ pub unsafe fn sync(
             let label = path
                 .as_ref()
                 .map(|p| {
+                    if let Some((label,_))=crate::held_refs::describe(p){return label;}
                     p.file_name()
                         .unwrap_or(p.as_os_str())
                         .to_string_lossy()
@@ -453,7 +460,7 @@ pub unsafe fn sync(
                 })
                 .unwrap_or_else(|| {
                     format!(
-                        "{} files · {}",
+                        "{} held · {}",
                         paths.len(),
                         if expanded { "Hide" } else { "Show" }
                     )
@@ -496,7 +503,7 @@ pub unsafe fn sync(
             .filter(|n| n.path.is_none())
             .map(|n| {
                 n.label = format!(
-                    "{} files · {}",
+                    "{} held · {}",
                     paths.len(),
                     if expanded { "Hide" } else { "Show" }
                 );

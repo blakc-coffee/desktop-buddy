@@ -288,9 +288,11 @@ export default function App() {
     if (
       !data ||
       !navigation ||
-      ["screenCapture", "screenExplain", ...(features.codexChats ? ["ask", "codex"] : [])].includes(
-        navigation.destination,
-      )
+      [
+        "screenCapture",
+        "screenExplain",
+        ...(features.codexChats ? ["ask", "codex"] : []),
+      ].includes(navigation.destination)
     )
       return;
     (navigation.destination === "resume"
@@ -616,29 +618,31 @@ export default function App() {
               "Fill",
               "Music",
             ] as Page[]
-          ).filter(pageEnabled).map((p) => (
-            <button
-              key={p}
-              aria-current={page === p ? "page" : undefined}
-              className={page === p ? "nav-item selected" : "nav-item"}
-              onClick={() => {
-                setPage(p);
-              }}
-            >
-              <Icon name={p} />
-              <span>{pageInfo[p].title}</span>
-              {p === "Activity" && attention.length > 0 && (
-                <b aria-label={`${attention.length} alerts`}>
-                  {attention.length}
-                </b>
-              )}
-              {p === "Codex" && (data?.agentAttention || 0) > 0 && (
-                <b aria-label={`${data?.agentAttention} need attention`}>
-                  {data?.agentAttention}
-                </b>
-              )}
-            </button>
-          ))}
+          )
+            .filter(pageEnabled)
+            .map((p) => (
+              <button
+                key={p}
+                aria-current={page === p ? "page" : undefined}
+                className={page === p ? "nav-item selected" : "nav-item"}
+                onClick={() => {
+                  setPage(p);
+                }}
+              >
+                <Icon name={p} />
+                <span>{pageInfo[p].title}</span>
+                {p === "Activity" && attention.length > 0 && (
+                  <b aria-label={`${attention.length} alerts`}>
+                    {attention.length}
+                  </b>
+                )}
+                {p === "Codex" && (data?.agentAttention || 0) > 0 && (
+                  <b aria-label={`${data?.agentAttention} need attention`}>
+                    {data?.agentAttention}
+                  </b>
+                )}
+              </button>
+            ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="local-indicator">
@@ -751,82 +755,88 @@ export default function App() {
                   </Suspense>
                 )}
               </div>
-              {features.codexChats && <div hidden={page !== "Codex"} className="page-pane codex-pane">
-                <Suspense
-                  fallback={
-                    <p className="explanation">Loading Codex workspace...</p>
-                  }
-                >
-                  <AgentPanel
-                    visible={page === "Codex"}
-                    navigation={navigation}
-                    onNavigated={acknowledgeNavigation}
-                    onTasksChange={setAgentTasks}
-                    focusTaskId={focusTaskId}
-                    projects={projects}
-                    shelf={shelf}
-                    todos={todos}
-                  />
-                </Suspense>
-                <details className="connections-disclosure">
-                  <summary>Connections and stored history</summary>
-                  <section>
-                    <div className="section-heading">
-                      <h2>Agent connections</h2>
-                      <span className="muted">
-                        Capability checked, never assumed
-                      </span>
-                    </div>
-                    {providers.map((p) => (
-                      <div className="provider" key={p.id}>
-                        <div className="provider-avatar">
-                          {p.id === "codex" ? "C" : "A"}
-                        </div>
-                        <div className="grow">
-                          <strong>
-                            {p.id === "codex" ? "Codex" : "Antigravity"}
-                          </strong>
-                          <p>{p.description}</p>
-                          <span className="status-tag">
-                            {p.installed ? "CLI detected" : "Not connected"}
-                          </span>
-                        </div>
-                        {p.id === "codex" && (
-                          <button
-                            className="small-button"
-                            disabled={!p.installed || busy}
-                            onClick={() => void discover()}
-                          >
-                            {busy ? "Reading…" : "Read stored sessions"}
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    {sessionNote && (
-                      <p className="explanation">{sessionNote}</p>
-                    )}
-                    {sessions.map((s, i) => (
-                      <div className="row session" key={String(s.id || i)}>
-                        <div className="grow">
-                          <strong>
-                            {String(
-                              s.name || s.preview || "Untitled stored session",
-                            ).slice(0, 150)}
-                          </strong>
-                          <span>{typeof s.cwd === "string" ? s.cwd : ""}</span>
-                        </div>
-                        <span className="status-tag">
-                          Stored · live state unverified
+              {features.codexChats && (
+                <div hidden={page !== "Codex"} className="page-pane codex-pane">
+                  <Suspense
+                    fallback={
+                      <p className="explanation">Loading Codex workspace...</p>
+                    }
+                  >
+                    <AgentPanel
+                      visible={page === "Codex"}
+                      navigation={navigation}
+                      onNavigated={acknowledgeNavigation}
+                      onTasksChange={setAgentTasks}
+                      focusTaskId={focusTaskId}
+                      projects={projects}
+                      shelf={shelf}
+                      todos={todos}
+                    />
+                  </Suspense>
+                  <details className="connections-disclosure">
+                    <summary>Connections and stored history</summary>
+                    <section>
+                      <div className="section-heading">
+                        <h2>Agent connections</h2>
+                        <span className="muted">
+                          Capability checked, never assumed
                         </span>
                       </div>
-                    ))}
-                    <p className="explanation">
-                      Reading history does not attach to desktop work. No
-                      prompts are sent and no sessions are resumed.
-                    </p>
-                  </section>
-                </details>
-              </div>}
+                      {providers.map((p) => (
+                        <div className="provider" key={p.id}>
+                          <div className="provider-avatar">
+                            {p.id === "codex" ? "C" : "A"}
+                          </div>
+                          <div className="grow">
+                            <strong>
+                              {p.id === "codex" ? "Codex" : "Antigravity"}
+                            </strong>
+                            <p>{p.description}</p>
+                            <span className="status-tag">
+                              {p.installed ? "CLI detected" : "Not connected"}
+                            </span>
+                          </div>
+                          {p.id === "codex" && (
+                            <button
+                              className="small-button"
+                              disabled={!p.installed || busy}
+                              onClick={() => void discover()}
+                            >
+                              {busy ? "Reading…" : "Read stored sessions"}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      {sessionNote && (
+                        <p className="explanation">{sessionNote}</p>
+                      )}
+                      {sessions.map((s, i) => (
+                        <div className="row session" key={String(s.id || i)}>
+                          <div className="grow">
+                            <strong>
+                              {String(
+                                s.name ||
+                                  s.preview ||
+                                  "Untitled stored session",
+                              ).slice(0, 150)}
+                            </strong>
+                            <span>
+                              {typeof s.cwd === "string" ? s.cwd : ""}
+                            </span>
+                          </div>
+                          <span className="status-tag">
+                            Stored · live state unverified
+                          </span>
+                        </div>
+                      ))}
+                      <p className="explanation">
+                        Reading history does not attach to desktop work. No
+                        prompts are sent and no sessions are resumed.
+                      </p>
+                    </section>
+                  </details>
+                </div>
+              )}
               {page === "Activity" && (
                 <>
                   {features.codexChats && (data.agentAttention || 0) > 0 && (
@@ -931,41 +941,43 @@ export default function App() {
                       </p>
                     )}
                   </section>
-                  {features.workspaces && <section className="overview-projects">
-                    <div className="section-heading">
-                      <h2>Continue a project</h2>
-                      <button
-                        className="text-button"
-                        onClick={() => setPage("Projects")}
-                      >
-                        All projects <Icon name="Arrow" size={14} />
-                      </button>
-                    </div>
-                    {projects.slice(0, 3).map((project) => (
-                      <button
-                        key={project.id}
-                        className="project-resume-link"
-                        onClick={() => {
-                          setSelectedProjectId(project.id);
-                          setPage("Projects");
-                        }}
-                      >
-                        <Icon name="Projects" />
-                        <span>
-                          <strong>{project.title}</strong>
+                  {features.workspaces && (
+                    <section className="overview-projects">
+                      <div className="section-heading">
+                        <h2>Continue a project</h2>
+                        <button
+                          className="text-button"
+                          onClick={() => setPage("Projects")}
+                        >
+                          All projects <Icon name="Arrow" size={14} />
+                        </button>
+                      </div>
+                      {projects.slice(0, 3).map((project) => (
+                        <button
+                          key={project.id}
+                          className="project-resume-link"
+                          onClick={() => {
+                            setSelectedProjectId(project.id);
+                            setPage("Projects");
+                          }}
+                        >
+                          <Icon name="Projects" />
                           <span>
-                            {project.note || "Add a next step in Projects."}
+                            <strong>{project.title}</strong>
+                            <span>
+                              {project.note || "Add a next step in Projects."}
+                            </span>
                           </span>
-                        </span>
-                        <Icon name="Arrow" size={16} />
-                      </button>
-                    ))}
-                    {!projects.length && (
-                      <p className="list-empty">
-                        Save a folder in Projects to keep its next step close.
-                      </p>
-                    )}
-                  </section>}
+                          <Icon name="Arrow" size={16} />
+                        </button>
+                      ))}
+                      {!projects.length && (
+                        <p className="list-empty">
+                          Save a folder in Projects to keep its next step close.
+                        </p>
+                      )}
+                    </section>
+                  )}
                 </>
               )}
               {page === "Tasks" && (
@@ -1534,6 +1546,23 @@ export default function App() {
                 <>
                   <section className="settings-section">
                     <h2>Appearance</h2>
+                    <label className="setting-row">
+                      <span>
+                        Quiet mode{" "}
+                        <small>
+                          Static pet and silent alerts; timers keep running.
+                        </small>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={!!data.quietMode}
+                        onChange={(e) =>
+                          void run("set_quiet_mode", {
+                            enabled: e.target.checked,
+                          })
+                        }
+                      />
+                    </label>
                     <label className="setting-row">
                       Theme
                       <select

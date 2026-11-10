@@ -1,6 +1,6 @@
 {
   "identifier": "main",
   "description": "Local utility panel only",
-  "windows": ["main", "todo", "explanation", "chats"],
+  "windows": ["main", "todo", "explanation", "chats", "held-preview"],
   "permissions": ["core:default", "core:window:allow-close"]
 }

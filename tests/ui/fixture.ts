@@ -117,6 +117,7 @@ export async function installFixture(
               (task: any) => task.pending.length > 0,
             ).length,
             petAppearance: "calico",
+            quietMode: !!root.fixtureQuiet,
           };
         if (command === "plugin:window|close") return null;
         if (command === "bubble_dismiss" || command === "ai_prepare") return null;
@@ -200,6 +201,9 @@ export async function installFixture(
           };
         if (command === "browser_connections") return [];
         if (command === "codex_sessions") return { data: [] };
+        if (command === "held_preview_read") return root.fixtureHeldPreview || null;
+        if (command === "held_preview_open") return;
+        if (command === "set_quiet_mode") {root.fixtureQuiet=!!args.enabled;root.fixtureEmit("data-changed",null);return;}
         if (command === "set_theme") {
           theme = args.theme;
           root.fixtureEmit("data-changed", null);

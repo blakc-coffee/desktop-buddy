@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         main: "index.html",
         todo: "todo.html",
+        preview: "preview.html",
         explanation: "explanation.html",
       },
     },

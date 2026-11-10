@@ -18,6 +18,8 @@ mod screen_region;
 mod menu_theme;
 mod pet;
 mod file_halo;
+mod held_refs;
+mod held_preview;
 mod pet_art;
 use model::*;
 use rusqlite::{params, Connection};
@@ -58,6 +60,7 @@ struct Snapshot {
     native: bool,
     agent_attention: usize,
     pet_appearance: String,
+    quiet_mode: bool,
 }
 
 fn rows(db: &Connection) -> Result<Vec<Item>, String> {
@@ -116,6 +119,7 @@ fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
         data_path: core.data_path.display().to_string(),
         warning: core.warning.lock().map_err(err)?.clone(),
         native: true,
+        quiet_mode: db.query_row("SELECT value FROM settings WHERE key='quiet_mode'",[],|row|row.get::<_,String>(0)).is_ok_and(|value|value=="true"),
         agent_attention: agents::attention_count(&db)?,
         pet_appearance: db.query_row("SELECT value FROM settings WHERE key='pet_appearance'", [], |row| row.get(0)).unwrap_or_else(|_| "calico".into()),
     })
@@ -330,6 +334,11 @@ fn set_theme(
     core.db.lock().map_err(err)?.execute("INSERT INTO settings(key,value) VALUES('theme',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[theme]).map_err(err)?;
     changed(&app, &core);
     Ok(())
+}
+#[tauri::command]
+fn set_quiet_mode(app:tauri::AppHandle,core:tauri::State<Shared>,enabled:bool)->Result<(),String>{
+    core.db.lock().map_err(err)?.execute("INSERT INTO settings(key,value) VALUES('quiet_mode',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[enabled.to_string()]).map_err(err)?;
+    pet::set_quiet(&app,enabled);changed(&app,&core);Ok(())
 }
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
@@ -726,7 +735,7 @@ fn scheduler(app: tauri::AppHandle, core: Shared) {
                     fired.len()
                 )
             };
-            if app
+            if !pet::quiet(&app) && app
                 .notification()
                 .builder()
                 .title("Desktop Buddy")
@@ -758,6 +767,7 @@ fn main() {
     tauri::Builder::default()
         .manage(navigation::Navigation::default())
         .manage(surfaces::Surfaces::default())
+        .manage(held_preview::Preview::default())
         .manage(Arc::new(browser_fill::BrowserState::default()))
         .manage(Arc::new(screen_helper::ScreenState::default()))
         .manage(Arc::new(warm_ai::WarmState::default()))
@@ -820,6 +830,9 @@ fn main() {
             start_timer,
             timer_action,
             set_theme,
+            set_quiet_mode,
+            held_preview::held_preview_read,
+            held_preview::held_preview_open,
             open_path,
             search_folder,
             stage_paths,

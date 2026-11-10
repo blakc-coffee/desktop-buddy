@@ -457,3 +457,10 @@ fn download_url_uses_a_bounded_local_http_fixture_and_follows_relative_redirects
         .contains("authorization:")
         && !request.to_ascii_lowercase().contains("cookie:")));
 }
+
+#[test]fn text_and_links_remain_references_without_network_downloads(){
+ let text="    print('hello')\nsecond line\n";
+ assert!(matches!(parse_text("text/uri-list",text).unwrap(),DropData::Text(value) if value==text));
+ assert!(matches!(parse_text("UniformResourceLocatorW","https://example.com/docs").unwrap(),DropData::Link(value) if value=="https://example.com/docs"));
+ assert!(matches!(parse_text("DownloadURL","application/pdf:report.pdf:https://example.com/report.pdf").unwrap(),DropData::Download{..}));
+}

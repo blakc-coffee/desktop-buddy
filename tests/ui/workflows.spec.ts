@@ -604,3 +604,28 @@ test("dedicated popup entries exclude dashboard modules and allow streamed answe
  await expect(page.getByLabel("Follow-up question")).toBeEnabled();
  expect(await page.evaluate(()=>performance.getEntriesByType("resource").some(entry=>entry.name.includes("/src/App.tsx")))).toBe(false);
 });
+
+
+test("quiet mode persists through the settings toggle without disturbing timers",async({page})=>{
+ await installFixture(page);await page.goto("/");await go(page,"Settings");
+ const quiet=page.getByRole("checkbox",{name:/Quiet mode/});await expect(quiet).not.toBeChecked();await quiet.check();await expect(quiet).toBeChecked();
+ await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((call:any)=>call.command==="set_quiet_mode"&&call.args.enabled===true).length)).toBe(1);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((call:any)=>call.command==="timer_action").length)).toBe(0);
+ await quiet.uncheck();await expect(quiet).not.toBeChecked();
+});
+
+test("held previews are compact, safely render text, and open links only on request",async({page})=>{
+ await page.setViewportSize({width:320,height:440});await installFixture(page,"light");
+ await page.addInitScript(()=>{(window as any).fixtureHeldPreview={name:"Text · code snippet",kind:"text",text:"<script>window.badPreview=true</script>\n"+"A long preview line ".repeat(500),truncated:true};});
+ await page.goto("/preview.html");await expect(page.getByRole("heading",{name:"Text · code snippet"})).toBeVisible();
+ await expect(page.locator("pre")).toContainText("<script>");expect(await page.evaluate(()=>(window as any).badPreview)).toBeUndefined();
+ await expect(page.getByText("Showing the first 64 KiB.",{exact:true})).toBeVisible();
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
+ const results=await new AxeBuilder({page}).withTags(["wcag2a","wcag2aa","wcag21aa","wcag22aa"]).analyze();expect(results.violations).toEqual([]);
+ await page.evaluate(()=>{(window as any).fixtureHeldPreview={name:"Link · example.com",kind:"link",text:"https://example.com/docs"};(window as any).fixtureEmit("held-preview-changed",null);});
+ await expect(page.getByRole("heading",{name:"Link · example.com"})).toBeVisible();
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.some((call:any)=>call.command==="held_preview_open"))).toBe(false);
+ await page.getByRole("button",{name:"Open link",exact:true}).click();
+ await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((call:any)=>call.command==="held_preview_open").length)).toBe(1);
+ expect(await page.evaluate(()=>performance.getEntriesByType("resource").some(entry=>entry.name.includes("/src/App.tsx")))).toBe(false);
+});

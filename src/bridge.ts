@@ -10,6 +10,7 @@ const read = (): Snapshot => {
     dataPath: "Browser preview storage · separate from the desktop database",
     warning: null,
     petAppearance: "calico",
+    quietMode: raw ? !!JSON.parse(raw).quietMode : false,
     native: false,
     agentHistory: raw ? JSON.parse(raw).agentHistory || [] : [],
   };
@@ -28,9 +29,11 @@ export async function call<T = void>(
   const item = s.items.find((i) => i.id === id);
   switch (command) {
     case "rename_todo": {
-      if (!item || item.kind !== "todo") throw new Error("This item is no longer a todo.");
+      if (!item || item.kind !== "todo")
+        throw new Error("This item is no longer a todo.");
       const title = String(args.title || "").trim();
-      if (!title || title.length > 240) throw new Error("Use a short todo title.");
+      if (!title || title.length > 240)
+        throw new Error("Use a short todo title.");
       item.title = title;
       break;
     }
@@ -77,6 +80,9 @@ export async function call<T = void>(
           item.state = "paused";
         }
       }
+      break;
+    case "set_quiet_mode":
+      s.quietMode = Boolean(args.enabled);
       break;
     case "set_theme":
       s.theme = String(args.theme);

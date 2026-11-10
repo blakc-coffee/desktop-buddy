@@ -3,6 +3,7 @@ use super::*;
 use crate::pet_art::{self, AnimationPhase, AnimationSet, Appearance, Cue};
 use std::{
     cell::RefCell,
+    collections::VecDeque,
     sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     time::Instant,
 };
@@ -36,6 +37,7 @@ const HALO_REFRESH: u32 = WM_APP + 22;
 const EXPLAINING: u32 = WM_APP + 23;
 const THINKING: u32 = WM_APP + 24;
 const WATCH_BUBBLE: u32 = WM_APP + 25;
+const QUIET: u32 = WM_APP + 26;
 const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
@@ -56,7 +58,9 @@ pub struct Control {
     hwnd: AtomicIsize,
     stopping: AtomicBool,
     status: Mutex<Status>,
-    pending: Mutex<Option<(u64, Result<Vec<PathBuf>, String>)>>,
+    pending: Mutex<VecDeque<(u64, Result<Vec<PathBuf>, String>)>>,
+    import_queue: Mutex<VecDeque<(u64, crate::drop_data::DropData)>>,
+    quiet: AtomicBool,
     import_generation: AtomicU64,
     active_import: AtomicU64,
     importing: AtomicBool,
@@ -69,7 +73,8 @@ impl Control {
             || self.import_generation.load(Ordering::SeqCst) != generation {
             return false;
         }
-        *pending = Some((generation, result));
+        if pending.len() >= 20 { return false; }
+        pending.push_back((generation, result));
         true
     }
 }
@@ -125,6 +130,15 @@ pub fn explanation_position_for_size(control: &Control, width: i32, height: i32)
     }
 }
 
+pub fn quiet(app:&tauri::AppHandle)->bool {
+ if let Some(control)=app.try_state::<Arc<Control>>(){return control.quiet.load(Ordering::SeqCst);}
+ setting(app,"quiet_mode").as_deref()==Some("true")
+}
+pub fn set_quiet(app:&tauri::AppHandle,enabled:bool){if let Some(control)=app.try_state::<Arc<Control>>(){control.quiet.store(enabled,Ordering::SeqCst);}post_pet_value(app,QUIET,enabled as usize);}
+pub fn preview_held(path:PathBuf,generation:u64){
+ let app=with_state(|state| (state.hold_generation==generation && state.files.contains(&path)).then(||state.app.clone())).flatten();
+ if let Some(app)=app{crate::held_preview::open(app,path);}
+}
 pub fn thinking(app: &tauri::AppHandle, active: bool) { post_pet_value(app, THINKING, active as usize); }
 pub fn watch_bubble(app: &tauri::AppHandle, window: isize) { post_pet_value(app, WATCH_BUBBLE, window as usize); }
 fn post_pet_value(app: &tauri::AppHandle, message: u32, value: usize) {
@@ -196,7 +210,7 @@ unsafe fn advance_motion(hwnd: HWND, state: &mut State, next: Option<(AnimationP
             SPI_GETCLIENTAREAANIMATION, 0, Some((&mut enabled as *mut BOOL).cast()),
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         );
-        if enabled.as_bool() {
+        if enabled.as_bool() && !state.control.quiet.load(Ordering::SeqCst) {
             if let Some(frame) = state.frames(phase).get(index) {
                 let delay = u32::from(frame.duration_ms).max(16);
                 if SetTimer(Some(hwnd), MOTION_TIMER, delay, None) != 0 {
@@ -237,15 +251,26 @@ fn publish(state: &State) {
         status.seconds_left = 0;
     }
 }
+fn merge_files(existing:&[PathBuf],incoming:Vec<PathBuf>)->Result<Vec<PathBuf>,String>{
+    let mut result=existing.to_vec();
+    let key=|path:&Path| {if let Some(reference)=crate::held_refs::get(path){return format!("{}:{}",reference.link,reference.text);}std::fs::canonicalize(path).map(|path|path.to_string_lossy().into_owned()).unwrap_or_else(|_|path.to_string_lossy().to_lowercase())};
+    let mut keys=existing.iter().map(|path|key(path)).collect::<std::collections::HashSet<_>>();
+    for path in incoming {if keys.insert(key(&path)){result.push(path);}else if !existing.contains(&path){crate::held_refs::forget(&path);}}
+    if result.len()>20 {return Err("Kitty can hold up to 20 references. Hand off or clear some first.".into());}
+    Ok(result)
+}
 unsafe fn hold(hwnd: HWND, state: &mut State, files: Vec<PathBuf>) {
     state.drop_notice = None;
     let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
-    state.files = files;
+    match merge_files(&state.files,files) {
+        Ok(files)=>state.files=files,
+        Err(message)=>{if let Ok(mut status)=state.control.status.lock(){status.message=message;}state.drop_notice=Some(Instant::now()+Duration::from_secs(8));let _=SetTimer(Some(hwnd),NOTICE_TIMER,1000,None);return;}
+    }
     state.hold_generation = state.hold_generation.wrapping_add(1);
     advance_motion(hwnd, state, Some((AnimationPhase::Pickup, 0, false)));
     if let Ok(mut status) = state.control.status.lock() {
         status.message =
-            "Files held until you clear or hand them off. Drag to copy out, or use /copy.".into();
+            "References held until cleared or handed off. Click a card to preview, drag to paste, or use /copy.".into();
     }
     publish(state);
 }
@@ -430,7 +455,6 @@ impl IDropTarget_Impl for Target_Impl {
                 s.hover = false;
                 match result {
                     Ok(Some(files)) => {
-                        s.control.import_generation.fetch_add(1, Ordering::SeqCst);
                         hold(hwnd, s, files);
                         *effect = accepted;
                     }
@@ -466,27 +490,28 @@ fn start_import(data: crate::drop_data::DropData) -> Result<(), String> {
         let core = state.app.state::<Shared>();
         (state.control.clone(), core.data_path.join("drag-cache"))
     }).ok_or("Pet is unavailable.")?;
-    if control.importing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return Err("An attachment import is still finishing. Try again shortly.".into());
-    }
-    let generation = control.import_generation.fetch_add(1, Ordering::SeqCst) + 1;
-    control.active_import.store(generation, Ordering::SeqCst);
-    if let Ok(mut status) = control.status.lock() {
-        status.message = "Importing attachment…".into();
-    }
-    let import_control = control.clone();
-    let worker = std::thread::Builder::new().name("buddy-file-import".into()).spawn(move || {
-        let result = crate::drop_data::materialize(data, &root).and_then(validated);
-        import_control.importing.store(false, Ordering::SeqCst);
-        if import_control.queue_import_result(generation, result) {
-            let hwnd = HWND(import_control.hwnd.load(Ordering::Relaxed) as _);
-            unsafe { let _ = PostMessageW(Some(hwnd), HOLD, WPARAM(0), LPARAM(0)); }
+    let generation=control.import_generation.load(Ordering::SeqCst);
+    let mut queue=control.import_queue.lock().map_err(err)?;
+    if queue.len()>=4 {return Err("Four attachments are queued. Let them finish before adding more.".into());}
+    queue.push_back((generation,data));
+    if control.importing.swap(true,Ordering::SeqCst){return Ok(());}
+    drop(queue);
+    let import_control=control.clone();
+    let worker=std::thread::Builder::new().name("buddy-file-import".into()).spawn(move||loop{
+        let next={let mut queue=import_control.import_queue.lock().unwrap_or_else(|e|e.into_inner());
+            match queue.pop_front(){Some(next)=>next,None=>{import_control.importing.store(false,Ordering::SeqCst);break;}}
+        };
+        let (generation,data)=next;
+        if import_control.stopping.load(Ordering::SeqCst){break;}
+        if import_control.import_generation.load(Ordering::SeqCst)!=generation {continue;}
+        import_control.active_import.store(generation,Ordering::SeqCst);
+        let result=crate::drop_data::materialize(data,&root).and_then(validated);
+        if import_control.queue_import_result(generation,result){
+            let hwnd=HWND(import_control.hwnd.load(Ordering::Relaxed) as _);
+            unsafe{let _=PostMessageW(Some(hwnd),HOLD,WPARAM(0),LPARAM(0));}
         }
     });
-    if worker.is_err() {
-        control.importing.store(false, Ordering::SeqCst);
-        return Err("Could not start the attachment import. Try again shortly.".into());
-    }
+    if worker.is_err(){control.import_queue.lock().map_err(err)?.clear();control.importing.store(false,Ordering::SeqCst);return Err("Could not start attachment import.".into());}
     Ok(())
 }
 #[implement(IDropSource)]
@@ -563,6 +588,7 @@ fn remove_handed_off_file(
     let Some(index) = files.iter().position(|file| file == path) else {
         return false;
     };
+    crate::held_refs::forget(&files[index]);
     files.remove(index);
     true
 }
@@ -620,15 +646,17 @@ unsafe fn shell_data(files: Vec<PathBuf>) -> Result<IDataObject, String> {
         }
         ids.push(id);
     }
+    let reference=files.iter().map(|path|crate::held_refs::get(path)).collect::<Option<Vec<_>>>().and_then(|references|{
+        if references.is_empty(){None}else if references.len()==1{references.into_iter().next()}else{Some(crate::held_refs::Reference{text:references.iter().map(|reference|reference.text.as_str()).collect::<Vec<_>>().join("\r\n"),link:false,label:"Text references".into()})}
+    });
     let raw: Vec<_> = ids.iter().map(|p| *p as *const _).collect();
     let array = SHCreateShellItemArrayFromIDLists(&raw);
     for id in ids {
         CoTaskMemFree(Some(id as _));
     }
-    array
-        .map_err(err)?
-        .BindToHandler(None::<&IBindCtx>, &BHID_DataObject)
-        .map_err(err)
+    let data:IDataObject=array.map_err(err)?.BindToHandler(None::<&IBindCtx>, &BHID_DataObject).map_err(err)?;
+    if let Some(reference)=reference {crate::held_refs::add_transfer_formats(&data,&reference)?;}
+    Ok(data)
 }
 unsafe fn copy_held(hwnd: HWND) -> Result<(), String> {
     refresh_hold(hwnd);
@@ -1006,6 +1034,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 if state.bubble_window.is_some() {state.bubble_hook=SetWindowsHookExW(WH_MOUSE_LL,Some(bubble_mouse),GetModuleHandleW(None).ok().map(|module|HINSTANCE(module.0)),0).ok();}
             }); LRESULT(0)
         }
+        QUIET => {
+            with_state(|state|{state.control.quiet.store(wp.0!=0,Ordering::SeqCst);
+                if wp.0!=0 {state.thinking=None;let _=KillTimer(Some(hwnd),THINKING_TIMER);advance_motion(hwnd,state,None);}
+            });let _=InvalidateRect(Some(hwnd),None,false);LRESULT(0)
+        }
         THINKING => {
             let _=KillTimer(Some(hwnd),THINKING_TIMER);
             with_state(|state| {
@@ -1015,7 +1048,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     state.explaining=true;
                     let mut enabled=BOOL(1);
                     let _=SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,Some((&mut enabled as *mut BOOL).cast()),SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
-                    if enabled.as_bool() {state.thinking=Some(Instant::now());let _=SetTimer(Some(hwnd),THINKING_TIMER,120,None);}
+                    if enabled.as_bool() && !state.control.quiet.load(Ordering::SeqCst) {state.thinking=Some(Instant::now());let _=SetTimer(Some(hwnd),THINKING_TIMER,120,None);}
                 }
             });let _=InvalidateRect(Some(hwnd),None,false);LRESULT(0)
         }
@@ -1030,7 +1063,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         PLAY_CUE => {
             if let Some(&cue) = Cue::ALL.get(wp.0) {
                 with_state(|state| {
-                    if can_play_cue(state.motion) {
+                    if !state.control.quiet.load(Ordering::SeqCst) && can_play_cue(state.motion) {
                         advance_motion(hwnd, state, Some((AnimationPhase::Activity(cue), 0, false)));
                     } else {
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1083,9 +1116,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         HOLD => {
             with_state(|s| {
-                let pending = s.control.pending.lock().ok().and_then(|mut p| p.take());
-                if let Some((generation, result)) = pending {
-                    if generation != s.control.import_generation.load(Ordering::SeqCst) { return; }
+                let pending = s.control.pending.lock().map(|mut p|p.drain(..).collect::<Vec<_>>()).unwrap_or_default();
+                for (generation, result) in pending {
+                    if generation != s.control.import_generation.load(Ordering::SeqCst) { continue; }
                     match result {
                         Ok(files) => hold(hwnd, s, files),
                         Err(message) => {
@@ -1322,6 +1355,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     2 => {
                         with_state(|s| {
                             s.control.import_generation.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(mut queue)=s.control.import_queue.lock(){queue.clear();}
+                            if let Ok(mut pending)=s.control.pending.lock(){pending.clear();}
+                            crate::held_preview::clear(&s.app);
+                            crate::held_refs::clear();
                             s.files.clear();
                             s.hold_generation = s.hold_generation.wrapping_add(1);
                             advance_motion(hwnd, s, None);
@@ -1367,7 +1404,9 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
         hwnd: AtomicIsize::new(0),
         stopping: AtomicBool::new(false),
         status: Mutex::new(Status::default()),
-        pending: Mutex::new(None),
+        pending: Mutex::new(VecDeque::new()),
+            import_queue: Mutex::new(VecDeque::new()),
+            quiet: AtomicBool::new(false),
         import_generation: AtomicU64::new(0),
         active_import: AtomicU64::new(0),
         importing: AtomicBool::new(false),
@@ -1397,6 +1436,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                 .as_deref()
                 .map(Appearance::from_key)
                 .unwrap_or_default();
+            output.quiet.store(setting(&app,"quiet_mode").as_deref()==Some("true"),Ordering::SeqCst);
             STATE.with(|s| {
                 *s.borrow_mut() = Some(State {
                     indicators: read_indicators(&app),
@@ -1560,8 +1600,9 @@ pub fn pet_hold(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
         .try_state::<Arc<Control>>()
         .ok_or("Pet is unavailable")?;
     let mut pending = c.pending.lock().map_err(err)?;
-    let generation = c.import_generation.fetch_add(1, Ordering::SeqCst) + 1;
-    *pending = Some((generation, Ok(files)));
+    let generation = c.import_generation.load(Ordering::SeqCst);
+    if pending.len()>=20 {return Err("Reference queue is full.".into());}
+    pending.push_back((generation, Ok(files)));
     drop(pending);
     message(&app, HOLD)
 }
@@ -1612,18 +1653,31 @@ pub fn stop(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]fn real_file_case_aliases_are_one_reference(){
+        let root=std::env::temp_dir().join(format!("buddy-merge-{}",new_id()));std::fs::create_dir(&root).unwrap();let file=root.join("OriginalCase.txt");std::fs::write(&file,"fixture").unwrap();
+        let merged=merge_files(&[file.clone()],vec![root.join("ORIGINALCASE.TXT")]).unwrap();assert_eq!(merged.len(),1);std::fs::remove_file(file).unwrap();std::fs::remove_dir(root).unwrap();
+    }
+    #[test]fn successive_drops_merge_deduplicate_and_respect_total_limit(){
+        let first=vec![PathBuf::from("C:/example/a.txt")];
+        let second=merge_files(&first,vec![PathBuf::from("c:/EXAMPLE/A.TXT"),PathBuf::from("C:/example/b.pdf")]).unwrap();
+        assert_eq!(second.len(),2);assert_eq!(second[0],first[0]);
+        let third=merge_files(&second,vec![PathBuf::from("C:/other/a.txt")]).unwrap();assert_eq!(third.len(),3);
+        let full=(0..20).map(|i|PathBuf::from(format!("C:/item-{i}"))).collect::<Vec<_>>();assert!(merge_files(&full,vec![PathBuf::from("C:/extra")]).is_err());assert_eq!(full.len(),20);
+    }
     #[test] fn bubble_outside_click_edges_do_not_swallow_inside_clicks() {
         let rect=RECT{left:100,top:100,right:400,bottom:300};
         assert!(!outside_bubble(POINT{x:100,y:100},rect));assert!(!outside_bubble(POINT{x:399,y:299},rect));
         assert!(outside_bubble(POINT{x:400,y:150},rect));assert!(outside_bubble(POINT{x:99,y:150},rect));
     }
     #[test]
-    fn old_imports_cannot_replace_a_newer_hold_or_reopen_a_cleared_batch() {
+    fn import_results_queue_and_clear_invalidates_earlier_callbacks() {
         let control = Control {
             hwnd: AtomicIsize::new(0),
             stopping: AtomicBool::new(false),
             status: Mutex::new(Status::default()),
-            pending: Mutex::new(None),
+            pending: Mutex::new(VecDeque::new()),
+            import_queue: Mutex::new(VecDeque::new()),
+            quiet: AtomicBool::new(false),
             import_generation: AtomicU64::new(1),
             active_import: AtomicU64::new(0),
             importing: AtomicBool::new(false),
@@ -1631,12 +1685,14 @@ mod tests {
         };
         control.import_generation.store(2, Ordering::SeqCst);
         assert!(control.queue_import_result(2, Ok(vec![PathBuf::from("latest")])));
+        assert!(control.queue_import_result(2,Ok(vec![PathBuf::from("next")])));
         assert!(!control.queue_import_result(1, Ok(vec![PathBuf::from("old")])));
-        let (_, result) = control.pending.lock().unwrap().take().unwrap();
+        let (_, result) = control.pending.lock().unwrap().pop_front().unwrap();
         assert_eq!(result.unwrap(), vec![PathBuf::from("latest")]);
+        let (_,result)=control.pending.lock().unwrap().pop_front().unwrap();assert_eq!(result.unwrap(),vec![PathBuf::from("next")]);
         control.import_generation.store(3, Ordering::SeqCst);
         assert!(!control.queue_import_result(2, Err("late error".into())));
-        assert!(control.pending.lock().unwrap().is_none());
+        assert!(control.pending.lock().unwrap().is_empty());
         assert_eq!(incoming_effect(DROPEFFECT_COPY | DROPEFFECT_MOVE), DROPEFFECT_COPY);
         assert_eq!(incoming_effect(DROPEFFECT_LINK), DROPEFFECT_LINK);
         assert_eq!(incoming_effect(DROPEFFECT_MOVE), DROPEFFECT_NONE);
@@ -1828,7 +1884,9 @@ mod tests {
                 hwnd: AtomicIsize::new(0),
                 stopping: AtomicBool::new(false),
                 status: Mutex::new(Status::default()),
-                pending: Mutex::new(None),
+                pending: Mutex::new(VecDeque::new()),
+            import_queue: Mutex::new(VecDeque::new()),
+            quiet: AtomicBool::new(false),
                 import_generation: AtomicU64::new(0),
                 active_import: AtomicU64::new(0),
                 importing: AtomicBool::new(false),

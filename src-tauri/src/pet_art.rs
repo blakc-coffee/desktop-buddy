@@ -2241,10 +2241,14 @@ pub unsafe fn draw_glasses(dc: HDC, appearance: Appearance, dpi: i32) {
         Appearance::Dog | Appearance::Husky => (515,460,840,465),
         Appearance::Panda => (310,825,550,785),
     };
-    let ink = rgb(48,43,53);
-    canvas.oval([x-105,y-80,x+105,y+80],None,Some(ink),25);
-    canvas.oval([right-105,ry-80,right+105,ry+80],None,Some(ink),25);
-    canvas.path(&[Move(x+105,y-15),Curve(x+145,y-40,right-145,ry-40,right-105,ry-15)],None,Some(ink),22);
-    canvas.path(&[Move(x-105,y-15),Line(x-145,y-40),Move(right+105,ry-15),Line(right+145,ry-40)],None,Some(ink),20);
+    // Oversized square frames; panda anchors are closer together.
+    let ink=rgb(48,33,29);
+    let (w,h,stroke)=if matches!(appearance,Appearance::Panda){(111,96,33)}else{(142,112,39)};
+    for (cx,cy) in [(x,y),(right,ry)] {
+        canvas.path(&[Move(cx-w+40,cy-h),Line(cx+w-40,cy-h),Curve(cx+w-5,cy-h,cx+w,cy-h+24,cx+w,cy-h+46),Line(cx+w,cy+h-46),Curve(cx+w,cy+h-10,cx+w-22,cy+h,cx+w-46,cy+h),Line(cx-w+46,cy+h),Curve(cx-w+10,cy+h,cx-w,cy+h-22,cx-w,cy+h-46),Line(cx-w,cy-h+46),Curve(cx-w,cy-h+12,cx-w+18,cy-h,cx-w+40,cy-h),Close],None,Some(ink),stroke);
+        canvas.path(&[Move(cx-w+40,cy-h+33),Line(cx-w+65,cy-h+33),Move(cx-w+31,cy-h+53),Line(cx-w+43,cy-h+40)],None,Some(rgb(255,239,208)),13);
+    }
+    canvas.path(&[Move(x+w,y-18),Curve(x+w+12,y-40,right-w-12,ry-40,right-w,ry-18)],None,Some(ink),stroke-3);
+    canvas.path(&[Move(x-w,y-30),Line(x-w-34,y-30),Move(right+w,ry-30),Line(right+w+34,ry-30)],None,Some(ink),stroke-4);
     let _ = RestoreDC(dc,saved);
 }

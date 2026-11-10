@@ -2160,3 +2160,16 @@ html[data-tail="right"] .explanation-bubble::before { left: auto; right: 7px; tr
 .followup-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .bubble-answer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+
+body:has(.held-preview) { min-width: 280px; }
+.held-preview {height:100vh;display:flex;flex-direction:column;padding:16px;gap:12px;background:var(--bg);color:var(--text);}
+.held-preview header,.held-preview footer {display:flex;align-items:center;gap:12px;flex:0 0 auto;}
+.held-preview h1 {font-size:16px;line-height:1.4;margin:0;overflow-wrap:anywhere;flex:1;}
+.held-preview-content {flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--accent) var(--surface);}
+.held-preview-content::-webkit-scrollbar {width:4px;height:4px;}
+.held-preview-content::-webkit-scrollbar-thumb {background:var(--accent);border-radius:0;}
+.held-preview-content img {display:block;max-width:100%;max-height:100%;object-fit:contain;margin:auto;}
+.held-preview-content pre {white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.55 Consolas,monospace;}
+.held-preview :focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
+.held-preview button {min-height:32px;flex-shrink:0;}
+.setting-row small {display:block;font-size:12px;color:var(--muted);line-height:1.5;}
