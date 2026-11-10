@@ -284,18 +284,21 @@ test("compact Todo stays editable and accessible", async ({ page }) => {
       exact: true,
     }),
   ).toBeVisible();
-  await page.getByRole("button", {name:"Remove Review the browser-helper setup",exact:true}).click();
+  const remove = page.getByRole("button", {name:"Remove Review the browser-helper setup",exact:true});
+  await expect(remove).toHaveCSS("opacity","0");
+  await page.locator(".todo-check-row").first().hover();
+  await expect(remove).toHaveCSS("opacity","1");
+  await expect(remove.locator("svg")).toHaveCount(1);
+  await remove.click();
   await expect(page.getByRole("checkbox",{name:"Complete Review the browser-helper setup",exact:true})).toHaveCount(0);
   await expect(page.getByRole("checkbox",{name:"Complete Write the complexity analysis",exact:true})).toBeVisible();
+  await page.getByRole("button", {name:"Remove Write the complexity analysis",exact:true}).focus();
+  await expect(page.getByRole("button", {name:"Remove Write the complexity analysis",exact:true})).toHaveCSS("opacity","1");
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();
   expect(results.violations).toEqual([]);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth > innerWidth,
-    ),
-  ).toBe(false);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
 });
 
 test("empty data, loading recovery and reduced-motion compact layout", async ({

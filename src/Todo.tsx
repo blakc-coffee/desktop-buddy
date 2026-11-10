@@ -194,12 +194,16 @@ export function TodoRow({
       />
       {allowRemove && (
         <button
-          className="text-button todo-remove"
+          className="todo-remove"
+          type="button"
+          title="Delete todo"
           disabled={busy}
           aria-label={`Remove ${item.title}`}
           onClick={() => void save("remove_item", { id: item.id })}
         >
-          Remove
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6m4-6v6" />
+          </svg>
         </button>
       )}
     </div>
