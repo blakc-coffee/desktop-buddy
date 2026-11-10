@@ -165,6 +165,8 @@ mod tests {
                 tymed: TYMED_HGLOBAL.0 as u32,
                 ..Default::default()
             };
+            forget(&paths[0]);
+            assert!(get(&paths[0]).is_none());
             let mut medium = data.GetData(&request).unwrap();
             let pointer =
                 windows::Win32::System::Memory::GlobalLock(medium.u.hGlobal).cast::<u16>();

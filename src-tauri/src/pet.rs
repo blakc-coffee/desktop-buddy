@@ -568,6 +568,7 @@ unsafe fn drag_out(hwnd: HWND) {
 unsafe fn finish_handoff(hwnd: HWND, state: &mut State, generation: u64) {
     // OLE can dispatch messages during a handoff. Preserve any newer batch.
     if state.hold_generation == generation {
+        for path in &state.files {crate::held_refs::forget(path);}
         state.files.clear();
         state.hold_generation = state.hold_generation.wrapping_add(1);
         let _ = KillTimer(Some(hwnd), 1);

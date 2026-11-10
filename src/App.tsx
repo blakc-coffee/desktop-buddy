@@ -1641,11 +1641,10 @@ export default function App() {
                     <h2>Desktop pet</h2>
                     <p className="explanation">
                       Click the floating pet for the compact command bar; /tools
-                      opens this window. Drop up to 20 local files or folders
-                      onto it to hold references until cleared or handed off.
-                      Drag a loaded pet to copy files into a folder or
-                      compatible app; Alt-drag moves the pet. Expiry never
-                      deletes originals.
+                      opens this window. Drop files, folders, selected text, or
+                      links onto Kitty. Each drop adds to the pile, up to 20
+                      references. Click a card to preview it, or drag it into
+                      another app. Alt-drag moves Kitty.
                     </p>
                     <div className="button-row">
                       <button
