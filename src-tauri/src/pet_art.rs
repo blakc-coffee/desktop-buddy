@@ -1959,6 +1959,7 @@ impl Canvas {
 
 include!("pet_final.rs");
 include!("pet_quiet.rs");
+include!("pet_reference.rs");
 
 /// Species-specific Todo control, drawn in the pet's logical 96-DPI space.
 pub unsafe fn draw_todo_icon(dc: HDC, appearance: Appearance, due: bool) {
@@ -2179,7 +2180,7 @@ pub unsafe fn draw_pose_accessory(dc: HDC, appearance: Appearance, hover: bool, 
 
     SetPolyFillMode(dc, WINDING);
     let canvas = Canvas { dc, dpi };
-    if !draw_quiet_pet(&canvas,appearance,awake || nerdy,pose){draw_final_art(&canvas, appearance, awake || nerdy);}
+    if !draw_reference_pet(&canvas,appearance){draw_final_art(&canvas, appearance, awake || nerdy);}
     if nerdy { draw_glasses(dc, appearance, dpi); }
     if let Some((file_x, file_y)) = file_motion {
         use ArtPath::*;
@@ -2251,7 +2252,7 @@ pub unsafe fn draw_glasses(dc: HDC, appearance: Appearance, dpi: i32) {
     use ArtPath::*;
     let saved = SaveDC(dc);
     let canvas = Canvas { dc, dpi };
-    let (x, y, right, ry) = match appearance {
+    let (x, y, right, ry) = reference_eyes(appearance).unwrap_or_else(|| match appearance {
         Appearance::Calico | Appearance::Cat => (550,490,840,480),
         Appearance::Dog | Appearance::Husky => (515,460,840,465),
         Appearance::Panda => (310,825,550,785),
@@ -2259,10 +2260,10 @@ pub unsafe fn draw_glasses(dc: HDC, appearance: Appearance, dpi: i32) {
         Appearance::Otter=>(345,805,540,805),
         Appearance::Capybara=>(430,530,650,530),
         _=>(570,480,825,480),
-    };
+    });
     // Oversized square frames; panda anchors are closer together.
     let ink=rgb(48,33,29);
-    let (w,h,stroke)=match appearance {Appearance::Panda=>(111,96,33),Appearance::Otter=>(88,72,28),Appearance::Capybara|Appearance::Dachshund=>(100,85,30),Appearance::Calico|Appearance::Cat|Appearance::Dog|Appearance::Husky=>(142,112,39),_=>(118,96,32)};
+    let (w,h,stroke)=if reference_eyes(appearance).is_some(){let w=(right-x)*48/100;(w,w*4/5,(w*28/100).max(22))}else{match appearance {Appearance::Panda=>(111,96,33),Appearance::Otter=>(88,72,28),Appearance::Capybara|Appearance::Dachshund=>(100,85,30),Appearance::Calico|Appearance::Cat|Appearance::Dog|Appearance::Husky=>(142,112,39),_=>(118,96,32)}};
     for (cx,cy) in [(x,y),(right,ry)] {
         canvas.path(&[Move(cx-w+40,cy-h),Line(cx+w-40,cy-h),Curve(cx+w-5,cy-h,cx+w,cy-h+24,cx+w,cy-h+46),Line(cx+w,cy+h-46),Curve(cx+w,cy+h-10,cx+w-22,cy+h,cx+w-46,cy+h),Line(cx-w+46,cy+h),Curve(cx-w+10,cy+h,cx-w,cy+h-22,cx-w,cy+h-46),Line(cx-w,cy-h+46),Curve(cx-w,cy-h+12,cx-w+18,cy-h,cx-w+40,cy-h),Close],None,Some(ink),stroke);
         canvas.path(&[Move(cx-w+40,cy-h+33),Line(cx-w+65,cy-h+33),Move(cx-w+31,cy-h+53),Line(cx-w+43,cy-h+40)],None,Some(rgb(255,239,208)),13);

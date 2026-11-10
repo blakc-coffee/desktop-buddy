@@ -1,0 +1,38 @@
+{
+  "blue-cat": {
+    "sha256": "970ee90ff188030dde7e52330b9b9f0b8492122424e16e940e428de79c39ff4a",
+    "bytes": 1137753
+  },
+  "calico": {
+    "sha256": "d1042d430f2d4b3056584ead21f029618ed0fc3c0fd570b8b68e3c9c43de6af0",
+    "bytes": 1175583
+  },
+  "capybara": {
+    "sha256": "283142eb9f30187c7057b0b3a61028873ac17d5abe8c93c918ef8567b9b8751c",
+    "bytes": 1158919
+  },
+  "collie": {
+    "sha256": "297128b7c9eab930c17988d7cd2ab5dcf306ef7bb5039d853c22da5f8864f929",
+    "bytes": 1128195
+  },
+  "dachshund": {
+    "sha256": "d3044e8298072ee4d4abfbd3a7ef5971b0ea6c9d00040ea3eb19e86ebb85e55c",
+    "bytes": 1178590
+  },
+  "otter": {
+    "sha256": "b967c1d17d34cb27434db02f5fb5c14691ccd39c0405165460543fd628ca8f2c",
+    "bytes": 1145864
+  },
+  "red-panda": {
+    "sha256": "b8ae041bcbe9f7164901fa3fedddfebdac80a22e5939d9964c2319f05fb78a04",
+    "bytes": 1174828
+  },
+  "samoyed": {
+    "sha256": "72108824bd367feca23acb508ab6d9527aa79bf85774a590acacfdb7deaf3f89",
+    "bytes": 1149591
+  },
+  "siamese": {
+    "sha256": "acaeb29126a2bef8de69aaec8a83857a8e2c8e7b83cb63a2639a815ff4f8382a",
+    "bytes": 1176574
+  }
+}
