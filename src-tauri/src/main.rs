@@ -15,6 +15,7 @@ mod screen_helper;
 mod warm_ai;
 mod screen_controls;
 mod chat_bubble;
+mod chat_agent;
 mod claude_chat;
 mod screen_region;
 mod menu_theme;

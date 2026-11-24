@@ -298,14 +298,14 @@ fn post_main(app: &tauri::AppHandle, quit: bool) {
         }
     });
 }
-fn save(app: &tauri::AppHandle, key: &str, value: &str) {
+pub(crate) fn save(app: &tauri::AppHandle, key: &str, value: &str) {
     if let Some(core) = app.try_state::<Shared>() {
         if let Ok(db) = core.db.lock() {
             let _=db.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value]);
         }
     }
 }
-fn setting(app: &tauri::AppHandle, key: &str) -> Option<String> {
+pub(crate) fn setting(app: &tauri::AppHandle, key: &str) -> Option<String> {
     let core = app.try_state::<Shared>()?;
     let db = core.db.lock().ok()?;
     db.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {

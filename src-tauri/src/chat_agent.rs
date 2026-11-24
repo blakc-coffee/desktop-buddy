@@ -1,0 +1,92 @@
+//! The one AI agent the user connected for questions in the search bar.
+
+use crate::resolve_cli;
+
+const SETTING: &str = "chat_agent";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Agent {
+    Claude,
+    Codex,
+    Antigravity,
+}
+
+pub const AGENTS: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::Antigravity];
+
+impl Agent {
+    pub fn key(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::Antigravity => "antigravity",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude Code",
+            Agent::Codex => "Codex",
+            Agent::Antigravity => "Antigravity",
+        }
+    }
+    pub fn cli(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::Antigravity => "agy",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Agent> {
+        AGENTS.into_iter().find(|agent| agent.key() == key)
+    }
+    pub fn install_url(self) -> &'static str {
+        match self {
+            Agent::Claude => "https://claude.com/product/claude-code",
+            Agent::Codex => "https://developers.openai.com/codex/cli",
+            Agent::Antigravity => "https://antigravity.google/download",
+        }
+    }
+    /// The CLI's own sign-in; Buddy only opens it and never sees credentials.
+    pub fn login_command(self) -> &'static [&'static str] {
+        match self {
+            Agent::Claude => &["claude"],
+            Agent::Codex => &["codex", "login"],
+            Agent::Antigravity => &["agy"],
+        }
+    }
+    /// Only native executables count: shims cannot be supervised without orphan workers.
+    pub fn installed(self) -> bool {
+        resolve_cli(self.cli()).is_some_and(|path| path.extension().is_some_and(|e| e == "exe"))
+    }
+}
+
+pub fn chosen(app: &tauri::AppHandle) -> Option<Agent> {
+    crate::pet::setting(app, SETTING).as_deref().and_then(Agent::from_key)
+}
+
+pub fn choose(app: &tauri::AppHandle, agent: Agent) {
+    crate::pet::save(app, SETTING, agent.key());
+}
+
+/// Opens the agent's own sign-in in a visible console window.
+pub fn open_sign_in(agent: Agent) -> Result<(), String> {
+    let path = resolve_cli(agent.cli()).ok_or_else(|| format!("{} is not installed.", agent.label()))?;
+    let mut command = std::process::Command::new("cmd");
+    command.args(["/c", "start", "", &path.display().to_string()]);
+    command.args(&agent.login_command()[1..]);
+    command.spawn().map(drop).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_keys_roundtrip_and_reject_unknown() {
+        for a in AGENTS {
+            assert_eq!(Agent::from_key(a.key()), Some(a));
+        }
+        assert_eq!(Agent::from_key("Claude"), None);
+        assert_eq!(Agent::from_key(""), None);
+        assert_eq!(Agent::Antigravity.cli(), "agy");
+    }
+}
