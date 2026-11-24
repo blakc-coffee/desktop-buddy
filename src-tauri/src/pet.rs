@@ -39,6 +39,9 @@ const THINKING: u32 = WM_APP + 24;
 const WATCH_BUBBLE: u32 = WM_APP + 25;
 const QUIET: u32 = WM_APP + 26;
 const GREET: u32 = WM_APP + 27;
+/// The name screen readers announce for the pet window.
+pub const PET_TITLE: &str = "Kitty, your desktop buddy. Drop files on me to hold them.";
+const FULLSCREEN: u32 = WM_APP + 28;
 const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
@@ -1212,6 +1215,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             LRESULT(0)
         }
+        FULLSCREEN => {
+            let user_visible = with_state(|s| s.control.status.lock().is_ok_and(|v| v.visible)).unwrap_or(false);
+            let show = visible_after(user_visible, wp.0 != 0);
+            let _ = ShowWindow(hwnd, if show { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            LRESULT(0)
+        }
         GREET => {
             if let Some(app) = with_state(|s| s.app.clone()) {
                 let today = crate::today();
@@ -1557,7 +1566,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
             let hwnd = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 class,
-                w!("Desktop Buddy pet — drop files to hold"),
+                PCWSTR(wide(PET_TITLE).as_ptr()),
                 WS_POPUP,
                 0,
                 0,
@@ -1655,6 +1664,13 @@ fn message(app: &tauri::AppHandle, msg: u32) -> Result<(), String> {
         return Err("Pet window is unavailable.".into());
     }
     unsafe { PostMessageW(Some(HWND(hwnd as _)), msg, WPARAM(0), LPARAM(0)).map_err(err) }
+}
+/// A fullscreen app hides the pet without changing the user's own show/hide choice.
+fn visible_after(user_visible: bool, fullscreen: bool) -> bool {
+    user_visible && !fullscreen
+}
+pub fn set_fullscreen(app: &tauri::AppHandle, on: bool) {
+    post_pet_value(app, FULLSCREEN, on as usize);
 }
 /// Asks "What are we working on?" a few seconds after start, at most once a day.
 pub fn greet_later(app: tauri::AppHandle) {
@@ -1847,6 +1863,13 @@ mod tests {
         assert!(remove_handed_off_file(&mut files,8,8,Path::new("b.pdf")));
         assert_eq!(files,vec![PathBuf::from("a.txt"),PathBuf::from("c.xlsx")]);
         assert!(!remove_handed_off_file(&mut files,8,8,Path::new("b.pdf")));
+    }
+    #[test]
+    fn fullscreen_never_overrides_a_user_hide() {
+        assert!(visible_after(true, false));
+        assert!(!visible_after(true, true));
+        assert!(!visible_after(false, false));
+        assert!(!visible_after(false, true));
     }
     #[test]
     fn render_species_todo_badges_and_idle_held_poses_offscreen() {

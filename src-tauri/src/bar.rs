@@ -174,6 +174,8 @@ fn change<T>(f: impl FnOnce(&mut Bar) -> T) -> Option<T> {
 const PET_SLOT: i32 = 46;
 const HINT_WIDTH: i32 = 92;
 const PLACEHOLDER: &str = "Ask Kitty anything";
+/// Window names screen readers announce.
+pub const BAR_TITLE: &str = "Ask Kitty";
 /// The greeting hides itself if it is not answered within a minute.
 const GREETING_TIMER: usize = 41;
 pub fn greeting_line(first_run: bool) -> &'static str {
@@ -747,6 +749,7 @@ unsafe fn execute() {
             note(&message);
         }
         Err(e) => {
+            crate::log_error(&app, &e);
             change(|bar| bar.finder = true);
             choices(vec![(e, Action::Feedback)]);
         }
@@ -1678,7 +1681,7 @@ unsafe fn open(app: &tauri::AppHandle, pet: HWND, greeting: Option<&'static str>
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             class,
-            w!("Desktop Buddy commands"),
+            PCWSTR(wide(BAR_TITLE).as_ptr()),
             WS_POPUP,
             0,
             0,

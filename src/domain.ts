@@ -34,6 +34,7 @@ export interface Snapshot {
   petAppearance?: string;
   quietMode?: boolean;
   focusId?: string;
+  hotkey?: string;
   agentHistory?: unknown[];
 }
 export const emptyItem = (kind: Item["kind"], title: string): Item => ({

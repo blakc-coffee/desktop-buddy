@@ -680,3 +680,17 @@ test("tools window has no Tasks page and task links open the Todo list", async (
     ),
   ).toBe(true);
 });
+
+test("settings pick the hotkey and copy diagnostics", async ({ page }) => {
+  await installFixture(page);
+  await page.addInitScript(() => {
+    (navigator as any).clipboard.writeText = async () => {};
+  });
+  await page.goto("/");
+  await go(page, "Settings");
+  await page.getByRole("combobox", { name: "Shortcut to open the bar" }).selectOption("Alt+Shift+K");
+  await page.getByRole("button", { name: "Copy diagnostics" }).click();
+  const calls = await page.evaluate(() => (window as any).fixtureCalls.map((call: any) => call));
+  expect(calls.some((call: any) => call.command === "set_hotkey" && call.args.keys === "Alt+Shift+K")).toBe(true);
+  expect(calls.some((call: any) => call.command === "diagnostics")).toBe(true);
+});

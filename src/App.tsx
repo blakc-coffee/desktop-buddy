@@ -1438,6 +1438,26 @@ export default function App() {
                     </label>
                   </section>
                   <section className="settings-section">
+                    <h2>Keyboard</h2>
+                    <label>
+                      Shortcut to open the bar
+                      <select
+                        value={data?.hotkey || "Ctrl+Alt+Space"}
+                        onChange={(event) =>
+                          void run("set_hotkey", { keys: event.target.value })
+                        }
+                      >
+                        {["Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+K"].map(
+                          (keys) => (
+                            <option key={keys} value={keys}>
+                              {keys}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                  </section>
+                  <section className="settings-section">
                     <h2>Data and backups</h2>
                     <p className="explanation">
                       Todos, projects, notes, timers, and reminder history stay
@@ -1451,6 +1471,21 @@ export default function App() {
                       >
                         <Icon name="Download" />
                         Export backup
+                      </button>
+                      <button
+                        className="small-button"
+                        onClick={() =>
+                          void call<string>("diagnostics")
+                            .then((text) => navigator.clipboard.writeText(text))
+                            .then(() =>
+                              setNotice(
+                                "Diagnostics copied. They hold no todo text or file paths.",
+                              ),
+                            )
+                            .catch((e) => setError(String(e)))
+                        }
+                      >
+                        Copy diagnostics
                       </button>
                       <button
                         className="small-button"

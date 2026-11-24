@@ -16,6 +16,8 @@ mod warm_ai;
 mod screen_controls;
 mod chat_bubble;
 mod chat_agent;
+mod diag;
+mod fullscreen;
 mod claude_chat;
 mod screen_region;
 mod menu_theme;
@@ -68,6 +70,7 @@ struct Snapshot {
     pet_appearance: String,
     quiet_mode: bool,
     focus_id: String,
+    hotkey: String,
 }
 
 fn rows(db: &Connection) -> Result<Vec<Item>, String> {
@@ -212,6 +215,7 @@ fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
         quiet_mode: db.query_row("SELECT value FROM settings WHERE key='quiet_mode'",[],|row|row.get::<_,String>(0)).is_ok_and(|value|value=="true"),
         agent_attention: agents::attention_count(&db)?,
         pet_appearance: db.query_row("SELECT value FROM settings WHERE key='pet_appearance'", [], |row| row.get(0)).unwrap_or_else(|_| "calico".into()),
+        hotkey: saved_hotkey(&db),
         focus_id: {
             let setting: Option<String> = db.query_row("SELECT value FROM settings WHERE key='focus'", [], |row| row.get(0)).ok();
             focus_for_today(setting.as_deref(), &today(), &items).map(|item| item.id).unwrap_or_default()
@@ -256,6 +260,66 @@ pub(crate) fn pin_focus(db: &Connection, id: &str) -> Result<(), String> {
     db.execute("INSERT INTO settings(key,value) VALUES('focus',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])
         .map_err(err)?;
     Ok(())
+}
+/// The bar's hotkey is one of a few presets, so a typo can never leave Buddy unreachable.
+const HOTKEYS: [&str; 3] = ["Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+K"];
+fn valid_hotkey(keys: &str) -> bool {
+    HOTKEYS.contains(&keys)
+}
+fn saved_hotkey(db: &Connection) -> String {
+    db.query_row("SELECT value FROM settings WHERE key='hotkey'", [], |row| row.get::<_, String>(0))
+        .ok()
+        .filter(|keys| valid_hotkey(keys))
+        .unwrap_or_else(|| HOTKEYS[0].into())
+}
+#[tauri::command]
+fn set_hotkey(app: tauri::AppHandle, core: tauri::State<Shared>, keys: String) -> Result<(), String> {
+    if !valid_hotkey(&keys) {
+        return Err("Pick one of the listed shortcuts.".into());
+    }
+    let old = saved_hotkey(&*core.db.lock().map_err(err)?);
+    if old == keys {
+        return Ok(());
+    }
+    let _ = app.global_shortcut().unregister(old.as_str());
+    if app.global_shortcut().register(keys.as_str()).is_err() {
+        let _ = app.global_shortcut().register(old.as_str());
+        return Err(format!("{keys} is already used by another app."));
+    }
+    core.db
+        .lock()
+        .map_err(err)?
+        .execute("INSERT INTO settings(key,value) VALUES('hotkey',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&keys])
+        .map_err(err)?;
+    changed(&app, &core);
+    Ok(())
+}
+pub(crate) fn log_error(app: &tauri::AppHandle, message: &str) {
+    if let Some(core) = app.try_state::<Shared>() {
+        diag::log(&core.data_path.join("buddy.log"), message);
+    }
+}
+fn process_ram_mb() -> u64 {
+    use windows_sys::Win32::System::{ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS}, Threading::GetCurrentProcess};
+    let mut counters = PROCESS_MEMORY_COUNTERS { cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..unsafe { std::mem::zeroed() } };
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) } != 0;
+    if ok { counters.WorkingSetSize as u64 / (1024 * 1024) } else { 0 }
+}
+/// Version, platform, memory, a few on/off settings and the last log lines. No todo text or paths.
+#[tauri::command]
+fn diagnostics(app: tauri::AppHandle, core: tauri::State<Shared>) -> String {
+    let flags = [
+        ("quiet", pet::quiet(&app)),
+        ("start_with_windows", autostart::enabled()),
+        ("agent_connected", chat_agent::chosen(&app).is_some()),
+    ];
+    diag::report(
+        env!("CARGO_PKG_VERSION"),
+        &format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        process_ram_mb(),
+        &flags,
+        &diag::tail(&core.data_path.join("buddy.log"), 50),
+    )
 }
 #[tauri::command]
 fn todo_open(app: tauri::AppHandle) {
@@ -1046,6 +1110,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             pin_recent,
+            set_hotkey,
+            diagnostics,
             todo_open,
             set_focus,
             start_focus,
@@ -1134,11 +1200,13 @@ fn main() {
             });
             autostart::refresh();
             app.manage(core.clone());
+            diag::install_panic_hook(core.data_path.join("buddy.log"));
             surfaces::start(app.handle().clone());
             let mut unavailable = Vec::new();
-            for shortcut in ["Ctrl+Alt+P", "Ctrl+Alt+Space"] {
+            let chosen = core.db.lock().map(|db| saved_hotkey(&db)).unwrap_or_else(|_| HOTKEYS[0].into());
+            for shortcut in ["Ctrl+Alt+P".to_string(), chosen] {
                 // The plugin's error is a Debug dump; the only actionable fact is which key is taken.
-                if app.global_shortcut().register(shortcut).is_err() {
+                if app.global_shortcut().register(shortcut.as_str()).is_err() {
                     unavailable.push(shortcut);
                 }
             }
@@ -1195,6 +1263,7 @@ fn main() {
                 Ok(control) => {
                     app.manage(control);
                     pet::greet_later(app.handle().clone());
+                    fullscreen::install(app.handle().clone());
                 }
                 Err(e) => {
                     let open = MenuItem::with_id(app, "recovery-open", "Open Desktop Buddy", true, None::<&str>)?;
@@ -1377,6 +1446,18 @@ mod storage_tests {
         assert_eq!(timer.parent_id, "t1");
         assert_eq!(timer.duration_ms, 1_500_000);
         assert_eq!(timer.state, "running");
+    }
+    #[test]
+    fn hotkey_presets_only() {
+        assert!(valid_hotkey("Ctrl+Alt+Space"));
+        assert!(valid_hotkey("Alt+Shift+K"));
+        assert!(!valid_hotkey("Win+L"));
+        assert!(!valid_hotkey(""));
+    }
+    #[test]
+    fn windows_have_accessible_names() {
+        assert!(pet::PET_TITLE.contains("Kitty"));
+        assert!(bar::BAR_TITLE.contains("Kitty"));
     }
     fn recents(db: &Connection) -> Vec<Item> {
         rows(db).unwrap().into_iter().filter(|i| i.kind == "recent").collect()
