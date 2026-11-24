@@ -166,11 +166,19 @@ fn get<T>(f: impl FnOnce(&Bar) -> T) -> Option<T> {
 fn change<T>(f: impl FnOnce(&mut Bar) -> T) -> Option<T> {
     BAR.with(|s| s.borrow_mut().as_mut().map(f))
 }
+/// The input line: a mini pet on the left, the typing area, and a "/ commands" hint on the right.
+const PET_SLOT: i32 = 52;
+const HINT_WIDTH: i32 = 92;
+const PLACEHOLDER: &str = "Ask Kitty anything";
 unsafe fn note(text: &str) {
     if let Some((hwnd, edit, status)) = get(|b| (b.hwnd, b.edit, b.status)) {
         let value = wide(text);
         let empty = GetWindowTextLengthW(edit) == 0;
-        let cue = wide(if empty { text } else { "" });
+        let cue = wide(match (empty, text.is_empty()) {
+            (true, true) => PLACEHOLDER,
+            (true, false) => text,
+            _ => "",
+        });
         SendMessageW(
             edit,
             0x1501,
@@ -975,8 +983,11 @@ unsafe fn layout(hwnd: HWND) {
         let _ = InvalidateRect(Some(hwnd), None, true);
     }
     let width = rect.right;
-    let start = s(16);
-    let end = width - s(16);
+    let start = s(PET_SLOT);
+    let hint = GetWindowTextLengthW(edit) == 0;
+    let end = width - s(16) - if hint { s(HINT_WIDTH + 8) } else { 0 };
+    // The hint appears and disappears with the first typed character, so the line is repainted.
+    let _ = InvalidateRect(Some(hwnd), None, false);
     let status_width = if has_note { s(130).min(width / 3) } else { 0 };
     let _ = SetWindowPos(
         edit,
@@ -1173,7 +1184,8 @@ unsafe fn paint(hwnd: HWND) {
             bar.visible_rows(),
             bar.finder,
             &bar.agent_status,
-        )
+        );
+        render_header(dc, rect, dpi as u32, palette, pet::appearance(), GetWindowTextLengthW(bar.edit) == 0);
     });
     let _ = EndPaint(hwnd, &paint);
 }
@@ -1216,6 +1228,50 @@ unsafe fn text(dc: HDC, value: &str, mut bounds: RECT, color: COLORREF, flags: D
 }
 /// "Ledger" layout: type carries the hierarchy, a single accent rule marks the selection,
 /// locations sit right-aligned in monospace, and a key-hint strip closes the list.
+unsafe fn render_header(
+    dc: HDC,
+    rect: RECT,
+    dpi: u32,
+    palette: crate::pet_art::Palette,
+    pet: crate::pet_art::Appearance,
+    hint: bool,
+) {
+    let scale = |value: i32| value * dpi as i32 / 96;
+    // The pet art fills a 128-unit window; at 3/8 of the bar's DPI that is a 48-unit face.
+    let saved = SaveDC(dc);
+    let _ = OffsetViewportOrgEx(dc, scale(4), (scale(HEIGHT) - scale(48)) / 2, None);
+    crate::pet_art::draw_pose_accessory(
+        dc,
+        pet,
+        false,
+        dpi as i32 * 3 / 8,
+        crate::pet_art::AnimationSet::neutral_still_pose(),
+        None,
+        false,
+        None,
+        false,
+    );
+    let _ = RestoreDC(dc, saved);
+    if !hint {
+        return;
+    }
+    let right = rect.right - scale(16);
+    let top = (scale(HEIGHT) - scale(24)) / 2;
+    let chip = RECT { left: right - scale(HINT_WIDTH), top, right, bottom: top + scale(24) };
+    let pen = CreatePen(PS_SOLID, 1, palette.outline);
+    let old_pen = SelectObject(dc, pen.into());
+    let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    let _ = RoundRect(dc, chip.left, chip.top, chip.right, chip.bottom, scale(8), scale(8));
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    let _ = DeleteObject(pen.into());
+    let mono = ui_font(dpi, 12, 400, w!("Consolas"));
+    let previous = SelectObject(dc, mono.into());
+    SetBkMode(dc, TRANSPARENT);
+    text(dc, "/ commands", chip, mix(palette.ink, palette.surface, 120), DT_CENTER);
+    SelectObject(dc, previous);
+    let _ = DeleteObject(mono.into());
+}
 unsafe fn render_bar(
     dc: HDC,
     rect: RECT,
@@ -1757,6 +1813,61 @@ mod tests {
             }
             assert!(painted > 2000, "pet preview drew only {painted} pixels");
             if let Some(path) = std::env::var_os("BUDDY_PET_PICKER_PREVIEW") {
+                let rgb: Vec<u8> = pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
+                let mut out = Vec::new();
+                {
+                    let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+                    encoder.set_color(png::ColorType::Rgb);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder.write_header().unwrap().write_image_data(&rgb).unwrap();
+                }
+                std::fs::write(path, out).unwrap();
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+        }
+    }
+    #[test]
+    fn empty_bar_header_draws_the_pet_and_the_command_hint() {
+        unsafe {
+            let dpi = 144u32;
+            let s = |value: i32| value * dpi as i32 / 96;
+            let (width, height) = (s(WIDTH), s(HEIGHT));
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: 40,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let old = SelectObject(dc, bitmap.into());
+            let pet = crate::pet_art::Appearance::Calico;
+            let palette = pet.palette();
+            let rect = RECT { left: 0, top: 0, right: width, bottom: height };
+            render_bar(dc, rect, dpi, palette, &[], 0, 5, false, "claude · ready");
+            render_header(dc, rect, dpi, palette, pet, true);
+            let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+            let bgr = |c: u32| (c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff);
+            let surface = bgr(palette.surface.0);
+            let painted = |x0: i32, x1: i32| {
+                (s(6)..height - s(6))
+                    .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                    .filter(|(x, y)| pixels[(y * width + x) as usize] & 0xffffff != surface)
+                    .count()
+            };
+            assert!(painted(s(8), s(PET_SLOT)) > 300, "mini pet missing");
+            assert!(painted(width - s(16) - s(HINT_WIDTH), width - s(16)) > 60, "command hint missing");
+            assert!(painted(s(PET_SLOT) + s(8), width - s(16) - s(HINT_WIDTH) - s(8)) == 0, "input area must stay clear");
+            if let Some(path) = std::env::var_os("BUDDY_BAR_HEADER_PREVIEW") {
                 let rgb: Vec<u8> = pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
                 let mut out = Vec::new();
                 {
