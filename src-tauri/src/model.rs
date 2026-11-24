@@ -54,6 +54,7 @@ pub fn validate(i: &Item) -> Result<(), String> {
         "timer",
         "project",
         "shelf",
+        "recent",
         "attention",
         "receipt",
     ]

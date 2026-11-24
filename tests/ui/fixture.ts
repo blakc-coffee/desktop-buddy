@@ -58,6 +58,9 @@ export async function installFixture(
             note: "Check drag formats and explain the supported browser editors.",
             projectId: "p1",
           }),
+          item("rc1", "recent", "Lecture slides.pdf", {
+            path: "C:\\Projects\\University\\Lecture slides.pdf",
+          }),
           item("s2", "shelf", "Problem statement.pdf", {
             path: "C:\\Projects\\University\\Semester 5\\Reference material\\Problem statement and assessment requirements.pdf",
             projectId: "p2",

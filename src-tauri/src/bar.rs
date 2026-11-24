@@ -626,6 +626,7 @@ unsafe fn execute() {
         }),
         Action::Open(path) => open_path(path).map(|_| "Folder opened.".to_string()),
         Action::OpenFile(path) => {
+            let opened = path.clone();
             let path = wide(&path);
             let result = windows::Win32::UI::Shell::ShellExecuteW(
                 None,
@@ -636,6 +637,7 @@ unsafe fn execute() {
                 SW_SHOWNORMAL,
             );
             if result.0 as isize > 32 {
+                crate::note_recent(&app, vec![opened]);
                 Ok("File opened.".into())
             } else {
                 Err("Windows could not open this file.".into())

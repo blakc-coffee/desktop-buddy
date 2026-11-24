@@ -91,6 +91,89 @@ fn put(db: &Connection, item: &Item) -> Result<(), String> {
     db.execute("INSERT INTO items(id,kind,created,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,payload=excluded.payload",params![item.id,item.kind,item.created_at,payload]).map_err(err)?;
     Ok(())
 }
+/// Recently used files stay on the shelf this long after their last use.
+const RECENT_FOR_MS: i64 = 3_600_000;
+const RECENT_LIMIT: usize = 20;
+/// Records each path as used now: one `recent` row per path, refreshed on reuse. Pinned paths are skipped.
+fn upsert_recent(db: &Connection, paths: &[String], now_ms: i64) -> Result<(), String> {
+    let all = rows(db)?;
+    let mut seen = std::collections::HashSet::new();
+    for path in paths.iter().filter(|path| seen.insert(path.as_str())) {
+        if all.iter().any(|i| i.kind == "shelf" && i.path == *path) {
+            continue;
+        }
+        let mut item = all
+            .iter()
+            .find(|i| i.kind == "recent" && i.path == *path)
+            .cloned()
+            .unwrap_or_else(|| Item {
+                id: new_id(),
+                kind: "recent".into(),
+                title: clip_title(
+                    &Path::new(path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.clone()),
+                ),
+                path: path.clone(),
+                ..Default::default()
+            });
+        item.created_at = now_ms;
+        put(db, &item)?;
+    }
+    prune_recent(db, now_ms)
+}
+/// Drops recent files unused for an hour, then all but the newest 20. Runs on read and write; no timer.
+fn prune_recent(db: &Connection, now_ms: i64) -> Result<(), String> {
+    let mut recent: Vec<Item> = rows(db)?.into_iter().filter(|i| i.kind == "recent").collect();
+    recent.sort_by_key(|i| std::cmp::Reverse(i.created_at));
+    for (index, item) in recent.iter().enumerate() {
+        if index >= RECENT_LIMIT || item.created_at < now_ms - RECENT_FOR_MS {
+            db.execute("DELETE FROM items WHERE id=?1", [&item.id]).map_err(err)?;
+        }
+    }
+    Ok(())
+}
+/// Keeps a recent file on the shelf for good.
+fn pin(db: &Connection, id: &str) -> Result<(), String> {
+    let mut item = get(db, id)?;
+    if item.kind != "recent" {
+        return Err("Only recent files can be pinned.".into());
+    }
+    if !Path::new(&item.path).exists() {
+        return Err("A dropped path no longer exists.".into());
+    }
+    if rows(db)?.iter().filter(|i| i.kind == "shelf").count() >= 50 {
+        return Err("Shelf limit is 50 entries.".into());
+    }
+    item.kind = "shelf".into();
+    put(db, &item)
+}
+/// Notes files the user just used, off the calling thread so UI threads never wait on the database.
+pub(crate) fn note_recent(app: &tauri::AppHandle, paths: Vec<String>) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Some(core) = app.try_state::<Shared>() else {
+            return;
+        };
+        let saved = core
+            .db
+            .lock()
+            .ok()
+            .is_some_and(|db| upsert_recent(&db, &paths, now()).is_ok());
+        if saved {
+            changed(&app, &core);
+        }
+    });
+}
+#[tauri::command]
+fn pin_recent(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> Result<(), String> {
+    let db = core.db.lock().map_err(err)?;
+    pin(&db, &id)?;
+    drop(db);
+    changed(&app, &core);
+    Ok(())
+}
 fn get(db: &Connection, id: &str) -> Result<Item, String> {
     let raw: String = db
         .query_row("SELECT payload FROM items WHERE id=?1", [id], |r| r.get(0))
@@ -108,6 +191,7 @@ fn changed(app: &tauri::AppHandle, c: &Core) {
 #[tauri::command]
 fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
     let db = core.db.lock().map_err(err)?;
+    prune_recent(&db, now())?;
     let mut items = rows(&db)?;
     for i in &mut items {
         if i.kind == "timer" && i.state == "running" {
@@ -879,6 +963,7 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            pin_recent,
             screen_helper::screen_capture,
             screen_helper::quick_answer,
             screen_helper::screen_result,
@@ -1186,6 +1271,60 @@ mod storage_tests {
             source: source.into(),
             ..Default::default()
         }
+    }
+    fn recents(db: &Connection) -> Vec<Item> {
+        rows(db).unwrap().into_iter().filter(|i| i.kind == "recent").collect()
+    }
+    #[test]
+    fn recent_upsert_refreshes_instead_of_duplicating() {
+        let db = database();
+        upsert_recent(&db, &["C:/a.txt".into()], 0).unwrap();
+        upsert_recent(&db, &["C:/a.txt".into()], 10).unwrap();
+        let rows = recents(&db);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].created_at, 10);
+        assert_eq!(rows[0].title, "a.txt");
+    }
+    #[test]
+    fn recent_expires_after_an_hour() {
+        let db = database();
+        upsert_recent(&db, &["C:/a.txt".into()], 0).unwrap();
+        prune_recent(&db, 3_600_000).unwrap();
+        assert_eq!(recents(&db).len(), 1);
+        prune_recent(&db, 3_600_001).unwrap();
+        assert!(recents(&db).is_empty());
+    }
+    #[test]
+    fn recent_caps_at_twenty() {
+        let db = database();
+        for t in 0..25 {
+            upsert_recent(&db, &[format!("C:/f{t}.txt")], t).unwrap();
+        }
+        let rows = recents(&db);
+        assert_eq!(rows.len(), 20);
+        assert!(rows.iter().all(|i| i.created_at >= 5));
+    }
+    #[test]
+    fn pinned_path_is_not_noted_recent() {
+        let db = database();
+        put(&db, &Item { id: "s".into(), kind: "shelf".into(), title: "a.txt".into(), path: "C:/a.txt".into(), ..Default::default() }).unwrap();
+        upsert_recent(&db, &["C:/a.txt".into()], 0).unwrap();
+        assert!(recents(&db).is_empty());
+    }
+    #[test]
+    fn pin_recent_moves_to_shelf() {
+        let db = database();
+        let file = std::env::temp_dir().join("buddy-recent-pin-test.txt");
+        std::fs::write(&file, "x").unwrap();
+        let path = file.display().to_string();
+        upsert_recent(&db, &[path.clone(), "C:/missing/gone.txt".into()], 0).unwrap();
+        let id = |p: &str| recents(&db).into_iter().find(|i| i.path == p).unwrap().id;
+        let missing = id("C:/missing/gone.txt");
+        pin(&db, &id(&path)).unwrap();
+        assert!(recents(&db).iter().all(|i| i.path != path));
+        assert!(rows(&db).unwrap().iter().any(|i| i.kind == "shelf" && i.path == path));
+        assert_eq!(pin(&db, &missing), Err("A dropped path no longer exists.".into()));
+        let _ = std::fs::remove_file(file);
     }
     #[test]
     fn snoozing_a_reminder_alert_reopens_the_same_reminder_and_drops_the_alert() {

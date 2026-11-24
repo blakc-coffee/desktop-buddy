@@ -586,7 +586,10 @@ export default function App() {
     todos = items.filter((i) => i.kind === "todo"),
     projects = items.filter((i) => i.kind === "project"),
     timers = items.filter((i) => i.kind === "timer"),
-    shelf = items.filter((i) => i.kind === "shelf");
+    shelf = items.filter((i) => i.kind === "shelf"),
+    recent = items
+      .filter((i) => i.kind === "recent")
+      .sort((a, b) => b.createdAt - a.createdAt);
   const clearForm = () => {
     setTitle("");
     setDue("");
@@ -1479,6 +1482,49 @@ export default function App() {
                       </div>
                     </form>
                   </details>
+                  {recent.length > 0 && (
+                    <>
+                      <h2>Recent · last hour</h2>
+                      {recent.map((i) => (
+                        <article className="shelf-item recent" key={i.id}>
+                          <div className="row">
+                            <div className="grow">
+                              <strong>{i.title}</strong>
+                              <span className="path">{i.path}</span>
+                            </div>
+                            <button
+                              className="small-button"
+                              disabled={!native}
+                              onClick={() =>
+                                void run("pet_hold", { paths: [i.path] })
+                              }
+                            >
+                              Hold with pet
+                            </button>
+                            <button
+                              className="small-button"
+                              onClick={() =>
+                                void run("open_path", { path: i.path })
+                              }
+                            >
+                              Open <Icon name="Arrow" size={14} />
+                            </button>
+                            <button
+                              className="small-button"
+                              aria-label={`Pin ${i.title}`}
+                              disabled={busy || shelf.length >= 50}
+                              onClick={() =>
+                                void run("pin_recent", { id: i.id })
+                              }
+                            >
+                              Pin
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                      {shelf.length > 0 && <h2>Pinned</h2>}
+                    </>
+                  )}
                   {shelf.map((i) => (
                     <article className="shelf-item" key={i.id}>
                       <div className="row">

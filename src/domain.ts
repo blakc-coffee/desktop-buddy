@@ -6,6 +6,7 @@ export interface Item {
     | "timer"
     | "project"
     | "shelf"
+    | "recent"
     | "attention"
     | "receipt";
   title: string;
@@ -130,6 +131,7 @@ export function validateBackup(text: string): Item[] {
         "timer",
         "project",
         "shelf",
+        "recent",
         "attention",
         "receipt",
       ].includes(i.kind) ||

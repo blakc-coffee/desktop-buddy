@@ -276,8 +276,9 @@ unsafe fn hold(hwnd: HWND, state: &mut State, files: Vec<PathBuf>) {
     state.cleared = None;
     state.drop_notice = None;
     let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
+    let added: Vec<String> = files.iter().map(|path| path.display().to_string()).collect();
     match merge_files(&state.files,files) {
-        Ok(files)=>state.files=files,
+        Ok(files)=>{state.files=files;crate::note_recent(&state.app,added);}
         Err(message)=>{if let Ok(mut status)=state.control.status.lock(){status.message=message;}state.drop_notice=Some(Instant::now()+Duration::from_secs(8));let _=SetTimer(Some(hwnd),NOTICE_TIMER,1000,None);return;}
     }
     state.hold_generation = state.hold_generation.wrapping_add(1);
@@ -676,6 +677,7 @@ unsafe fn shell_data(files: Vec<PathBuf>) -> Result<IDataObject, String> {
 unsafe fn copy_held(hwnd: HWND) -> Result<(), String> {
     refresh_hold(hwnd);
     let (files, deadline) = with_state(|s| (s.files.clone(), s.hold_generation)).unwrap_or_default();
+    let used: Vec<String> = files.iter().map(|path| path.display().to_string()).collect();
     let result = (|| -> Result<(), String> {
         let data = shell_data(files)?;
         prefer_copy(&data)?;
@@ -686,6 +688,7 @@ unsafe fn copy_held(hwnd: HWND) -> Result<(), String> {
     with_state(|s| {
         if result.is_ok() {
             finish_handoff(hwnd, s, deadline);
+            crate::note_recent(&s.app, used);
         }
         if let Ok(mut status) = s.control.status.lock() {
             status.message=match &result{Ok(())=>"Copied file references. Paste in a folder or compatible app. Clipboard is now owned by your copy action.".into(),Err(e)=>e.clone()};

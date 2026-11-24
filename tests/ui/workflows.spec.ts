@@ -650,3 +650,26 @@ test("removed todos can be undone and due alerts snoozed", async ({ page }) => {
   await expect(alert).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as { fixtureCalls: { command: string; args: unknown }[] }).fixtureCalls.filter((c) => c.command === "snooze_item"))).toEqual([{ command: "snooze_item", args: { id: "due-focus", minutes: 10 } }]);
 });
+
+test("shelf shows recent above pinned with Pin", async ({ page }) => {
+  await installFixture(page);
+  await page.goto("/");
+  await go(page, "Shelf");
+  const heading = page.getByRole("heading", { name: "Recent · last hour" });
+  await expect(heading).toBeVisible();
+  const recent = page.locator(".shelf-item.recent");
+  await expect(recent).toHaveCount(1);
+  await expect(recent.getByRole("button", { name: "Hold with pet" })).toBeVisible();
+  await expect(recent.getByRole("button", { name: /^Open/ })).toBeVisible();
+  const recentTop = (await recent.boundingBox())!.y;
+  const pinnedTop = (await page.locator(".shelf-item:not(.recent)").first().boundingBox())!.y;
+  expect(recentTop).toBeLessThan(pinnedTop);
+  await recent.getByRole("button", { name: "Pin Lecture slides.pdf" }).click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).fixtureCalls.some(
+        (call: any) => call.command === "pin_recent" && call.args.id === "rc1",
+      ),
+    ),
+  ).toBe(true);
+});
