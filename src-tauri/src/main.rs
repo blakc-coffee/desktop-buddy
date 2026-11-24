@@ -67,6 +67,7 @@ struct Snapshot {
     agent_attention: usize,
     pet_appearance: String,
     quiet_mode: bool,
+    focus_id: String,
 }
 
 fn rows(db: &Connection) -> Result<Vec<Item>, String> {
@@ -204,7 +205,6 @@ fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
         })
         .unwrap_or_else(|_| "dark".to_string());
     Ok(Snapshot {
-        items,
         theme,
         data_path: core.data_path.display().to_string(),
         warning: core.warning.lock().map_err(err)?.clone(),
@@ -212,7 +212,52 @@ fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
         quiet_mode: db.query_row("SELECT value FROM settings WHERE key='quiet_mode'",[],|row|row.get::<_,String>(0)).is_ok_and(|value|value=="true"),
         agent_attention: agents::attention_count(&db)?,
         pet_appearance: db.query_row("SELECT value FROM settings WHERE key='pet_appearance'", [], |row| row.get(0)).unwrap_or_else(|_| "calico".into()),
+        focus_id: {
+            let setting: Option<String> = db.query_row("SELECT value FROM settings WHERE key='focus'", [], |row| row.get(0)).ok();
+            focus_for_today(setting.as_deref(), &today(), &items).map(|item| item.id).unwrap_or_default()
+        },
+        items,
     })
+}
+/// Today's date on the local clock, as YYYY-MM-DD. Focus pins expire when it changes.
+pub(crate) fn today() -> String {
+    let mut t = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)
+}
+/// The open todo pinned as focus, if the pin was made today. The setting is "{todo_id}|{date}".
+fn focus_for_today(setting: Option<&str>, today: &str, items: &[Item]) -> Option<Item> {
+    let (id, day) = setting?.split_once('|')?;
+    if day != today {
+        return None;
+    }
+    items.iter().find(|i| i.kind == "todo" && !i.done && i.id == id).cloned()
+}
+pub(crate) fn pin_focus(db: &Connection, id: &str) -> Result<(), String> {
+    let value = if id.is_empty() { String::new() } else { format!("{id}|{}", today()) };
+    db.execute("INSERT INTO settings(key,value) VALUES('focus',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])
+        .map_err(err)?;
+    Ok(())
+}
+#[tauri::command]
+fn set_focus(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> Result<(), String> {
+    pin_focus(&*core.db.lock().map_err(err)?, &id)?;
+    changed(&app, &core);
+    Ok(())
+}
+/// Starts a 25-minute timer linked to the todo, titled like it.
+#[tauri::command]
+fn start_focus(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> Result<(), String> {
+    let db = core.db.lock().map_err(err)?;
+    let todo = get(&db, &id)?;
+    if todo.kind != "todo" {
+        return Err("Only a todo can start a focus timer.".into());
+    }
+    start_timer_in(&db, todo.title, 25, todo.project_id, Some(id), &core.run)?;
+    drop(db);
+    changed(&app, &core);
+    pet::cue(&app, pet_art::Cue::FocusStart);
+    Ok(())
 }
 #[tauri::command]
 fn save_item(
@@ -401,11 +446,25 @@ fn start_timer(
     minutes: u32,
     project_id: String,
 ) -> Result<(), String> {
+    let db = core.db.lock().map_err(err)?;
+    start_timer_in(&db, title, minutes, project_id, None, &core.run)?;
+    drop(db);
+    changed(&app, &core);
+    pet::cue(&app, pet_art::Cue::FocusStart);
+    Ok(())
+}
+fn start_timer_in(
+    db: &Connection,
+    title: String,
+    minutes: u32,
+    project_id: String,
+    parent_id: Option<String>,
+    run: &str,
+) -> Result<(), String> {
     if minutes == 0 || minutes > 1440 || title.len() > 240 {
         return Err("Timer duration must be 1–1440 minutes.".into());
     }
-    let db = core.db.lock().map_err(err)?;
-    let all = rows(&db)?;
+    let all = rows(db)?;
     if all.len() >= 1900 {
         return Err("Local item limit reached. Export and clear old entries first.".into());
     }
@@ -431,16 +490,13 @@ fn start_timer(
         remaining_ms: duration,
         due_at: now() + duration,
         started_tick: ticks(),
-        run: core.run.clone(),
+        run: run.into(),
         state: "running".into(),
         project_id,
+        parent_id: parent_id.unwrap_or_default(),
         ..Default::default()
     };
-    put(&db, &i)?;
-    drop(db);
-    changed(&app, &core);
-    pet::cue(&app, pet_art::Cue::FocusStart);
-    Ok(())
+    put(db, &i)
 }
 #[tauri::command]
 fn timer_action(
@@ -964,6 +1020,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             pin_recent,
+            set_focus,
+            start_focus,
             screen_helper::screen_capture,
             screen_helper::quick_answer,
             screen_helper::screen_result,
@@ -1271,6 +1329,26 @@ mod storage_tests {
             source: source.into(),
             ..Default::default()
         }
+    }
+    #[test]
+    fn focus_matches_only_today_and_open_todos() {
+        let todo = Item { id: "t1".into(), kind: "todo".into(), title: "Essay".into(), ..Default::default() };
+        let items = vec![todo.clone()];
+        assert_eq!(focus_for_today(Some("t1|2026-11-24"), "2026-11-24", &items).map(|i| i.id), Some("t1".into()));
+        assert!(focus_for_today(Some("t1|2026-11-24"), "2026-11-25", &items).is_none());
+        assert!(focus_for_today(Some("gone|2026-11-24"), "2026-11-24", &items).is_none());
+        let done = vec![Item { done: true, ..todo }];
+        assert!(focus_for_today(Some("t1|2026-11-24"), "2026-11-24", &done).is_none());
+        assert!(focus_for_today(None, "2026-11-24", &items).is_none());
+    }
+    #[test]
+    fn start_focus_links_the_timer() {
+        let db = database();
+        start_timer_in(&db, "Essay".into(), 25, String::new(), Some("t1".into()), "run").unwrap();
+        let timer = rows(&db).unwrap().into_iter().find(|i| i.kind == "timer").unwrap();
+        assert_eq!(timer.parent_id, "t1");
+        assert_eq!(timer.duration_ms, 1_500_000);
+        assert_eq!(timer.state, "running");
     }
     fn recents(db: &Connection) -> Vec<Item> {
         rows(db).unwrap().into_iter().filter(|i| i.kind == "recent").collect()

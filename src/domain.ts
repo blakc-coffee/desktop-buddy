@@ -22,6 +22,7 @@ export interface Item {
   remainingMs: number;
   startedTick: number;
   run: string;
+  parentId?: string;
 }
 export interface Snapshot {
   items: Item[];
@@ -32,6 +33,7 @@ export interface Snapshot {
   agentAttention?: number;
   petAppearance?: string;
   quietMode?: boolean;
+  focusId?: string;
   agentHistory?: unknown[];
 }
 export const emptyItem = (kind: Item["kind"], title: string): Item => ({
