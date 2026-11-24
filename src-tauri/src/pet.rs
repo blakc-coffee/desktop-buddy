@@ -1407,22 +1407,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }
                 let startup = if crate::autostart::enabled() { MF_CHECKED } else { MF_UNCHECKED };
                 let _ = AppendMenuW(menu, MF_STRING | startup, 6, w!("Start with Windows"));
-                if let Ok(pets) = CreatePopupMenu() {
-                    for (index, pet) in APPEARANCES.into_iter().enumerate() {
-                        let label=wide(pet.label());
-                        let flags = MF_STRING | if pet == appearance() { MF_CHECKED } else { MF_UNCHECKED };
-                        let _ = AppendMenuW(pets, flags, 20 + index, PCWSTR(label.as_ptr()));
-                    }
-                    if AppendMenuW(menu, MF_POPUP, pets.0 as usize, w!("Choose pet")).is_err() {
-                        let _ = DestroyMenu(pets);
-                    }
-                }
+                let _ = AppendMenuW(menu, MF_STRING, 20, w!("Change pet…"));
                 let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit"));
                 let action = crate::menu_theme::track(menu, hwnd, p.x, p.y, appearance().palette());
                 match action {
-                    20..=26 => {
+                    20 => {
+                        // The search bar's pet list shows a live preview of each pet.
                         if let Some(app) = with_state(|s| s.app.clone()) {
-                            set_appearance(&app, APPEARANCES[action as usize - 20]);
+                            crate::bar::open_with(&app, hwnd, "/pet");
                         }
                     }
                     1 => {

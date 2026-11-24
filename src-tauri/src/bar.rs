@@ -87,6 +87,23 @@ unsafe fn show_agents(app: &tauri::AppHandle) {
     choices(rows);
     note("Connect an agent");
 }
+/// Logical size of the pet preview drawn beside the /pet list: the pet window, 128 x 136.
+const PREVIEW_WIDTH: i32 = 128;
+/// The pet to preview: whichever pet row is selected, so the preview follows the arrow keys.
+fn preview_for(rows: &[(String, Action)], selected: usize) -> Option<crate::pet_art::Appearance> {
+    match rows.get(selected) {
+        Some((_, Action::Pet(pet))) => Some(*pet),
+        _ => None,
+    }
+}
+/// Opens the bar (if hidden) with `text` already typed, e.g. "/pet" from the pet's menu.
+pub unsafe fn open_with(app: &tauri::AppHandle, pet: HWND, text: &str) {
+    if !get(|b| IsWindowVisible(b.hwnd).as_bool()).unwrap_or(false) {
+        toggle(app, pet);
+    }
+    fill(text);
+    refresh();
+}
 fn agent_status(app: &tauri::AppHandle) -> String {
     use crate::chat_agent::{chosen, status_label, Agent};
     status_label(chosen(app), Agent::installed)
@@ -1239,9 +1256,12 @@ unsafe fn render_bar(
     let first = selected / visible_rows * visible_rows;
     let left = scale(54);
     let right = rect.right - scale(16);
+    let preview = preview_for(rows, selected);
+    let row_right = right - if preview.is_some() { scale(PREVIEW_WIDTH + 12) } else { 0 };
     let path_width = (right - left) * 2 / 5;
     let kind_width = scale(76);
     for (index, (label, action)) in rows.iter().enumerate().skip(first).take(visible_rows) {
+        let right = row_right;
         let top = scale(HEIGHT) + 1 + scale((index - first) as i32 * ROW_HEIGHT);
         let row = RECT { left, top, right, bottom: top + scale(ROW_HEIGHT) };
         let chosen = index == selected;
@@ -1288,6 +1308,24 @@ unsafe fn render_bar(
         }
         SelectObject(dc, if chosen { strong } else { regular }.into());
         text(dc, name, name_bounds, palette.ink, DT_END_ELLIPSIS);
+    }
+    if let Some(pet) = preview {
+        // The pet art draws its own 128 x 136 window at the bar's DPI, centred in the rows area.
+        let saved = SaveDC(dc);
+        let top = scale(HEIGHT) + ((footer_top - scale(HEIGHT) - scale(136)) / 2).max(0);
+        let _ = OffsetViewportOrgEx(dc, right - scale(PREVIEW_WIDTH), top, None);
+        crate::pet_art::draw_pose_accessory(
+            dc,
+            pet,
+            false,
+            dpi as i32,
+            crate::pet_art::AnimationSet::neutral_still_pose(),
+            None,
+            false,
+            None,
+            false,
+        );
+        let _ = RestoreDC(dc, saved);
     }
     SelectObject(dc, mono.into());
     let footer = RECT { left: scale(18), top: footer_top, right, bottom: rect.bottom };
@@ -1664,6 +1702,73 @@ mod tests {
         assert!(rows[1].0.contains("not installed"));
         assert!(matches!(rows[1].1, Action::Install(Agent::Codex)));
         assert!(matches!(rows[2].1, Action::Agent(Agent::Antigravity)));
+    }
+    #[test]
+    fn pets_list_sets_preview_to_selection() {
+        let rows: Vec<(String, Action)> = crate::pet::APPEARANCES
+            .into_iter()
+            .map(|pet| (pet.label().to_string(), Action::Pet(pet)))
+            .collect();
+        assert_eq!(preview_for(&rows, 2), Some(crate::pet::APPEARANCES[2]));
+        assert_eq!(preview_for(&[], 0), None);
+        assert_eq!(preview_for(&[("Open tools".into(), Action::Tools)], 0), None);
+    }
+    #[test]
+    fn render_pet_picker_draws_the_selected_pet_in_the_preview_cell() {
+        unsafe {
+            let dpi = 144u32;
+            let s = |value: i32| value * dpi as i32 / 96;
+            let (width, height) = (s(WIDTH), s(HEIGHT + ROW_HEIGHT * 5 + FOOTER));
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: 40,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let old = SelectObject(dc, bitmap.into());
+            let rows: Vec<(String, Action)> = crate::pet::APPEARANCES
+                .into_iter()
+                .map(|pet| (pet.label().to_string(), Action::Pet(pet)))
+                .collect();
+            let palette = crate::pet_art::Appearance::Calico.palette();
+            render_bar(dc, RECT { left: 0, top: 0, right: width, bottom: height }, dpi, palette, &rows, 1, 5, true, "claude · ready");
+            let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+            let surface = palette.surface.0;
+            let bgr = |c: u32| (c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff);
+            let (cell_left, cell_top) = (width - s(16) - s(PREVIEW_WIDTH), s(HEIGHT) + s(32));
+            let mut painted = 0;
+            for y in cell_top..cell_top + s(96) {
+                for x in cell_left..width - s(16) {
+                    if pixels[(y * width + x) as usize] & 0xffffff != bgr(surface) {
+                        painted += 1;
+                    }
+                }
+            }
+            assert!(painted > 2000, "pet preview drew only {painted} pixels");
+            if let Some(path) = std::env::var_os("BUDDY_PET_PICKER_PREVIEW") {
+                let rgb: Vec<u8> = pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
+                let mut out = Vec::new();
+                {
+                    let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+                    encoder.set_color(png::ColorType::Rgb);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder.write_header().unwrap().write_image_data(&rgb).unwrap();
+                }
+                std::fs::write(path, out).unwrap();
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+        }
     }
     #[test]
     fn actions_menu_has_no_music() {
