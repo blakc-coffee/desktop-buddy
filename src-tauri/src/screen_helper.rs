@@ -427,7 +427,12 @@ pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), Strin
             use crate::chat_agent::{self as agents, Agent};
             let agent = agents::route(agents::chosen(&app), Agent::installed).map_err(String::from)?;
             if agent != Agent::Codex {
-                return match claude_answer(&app,agent,&owned,generation,&question) {
+                let answer = claude_answer(&app,agent,&owned,generation,&question);
+                agents::flag_sign_in(match &answer {
+                    Err(error) if agents::is_auth_error(&error.message) => Some(agent),
+                    _ => None,
+                });
+                return match answer {
                     Ok(crate::claude_chat::Reply::Text(text)) => Ok(done(text)),
                     Ok(crate::claude_chat::Reply::Action(action)) => crate::claude_chat::action_command(&action)
                         .and_then(|command| crate::apply_command(&app, command))

@@ -38,6 +38,8 @@ pub enum Command {
 
     Pets,
 
+    Agent,
+
     Find(String),
 
     Workspaces(String),
@@ -68,7 +70,7 @@ pub fn suggestions(text: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 8] {
+pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 9] {
     [
         (&["/sc", "/screen", "/fill"], "/sc question · Capture and fill", "/sc "),
         (&["/exp", "/explain"], "/exp question · Explain screen", "/exp "),
@@ -78,6 +80,7 @@ pub fn definitions() -> [(&'static [&'static str], &'static str, &'static str); 
         (&["/todos"], "/todos · Checklist", "/todos"),
         (&["/f", "/find"], "/f name · Find files", "/f "),
         (&["/tools", "/settings"], "/tools · Manage tools and settings", "/tools"),
+        (&["/agent"], "/agent · Connect an AI agent", "/agent"),
     ]
 }
 
@@ -133,6 +136,8 @@ pub fn parse(text: &str) -> Result<Command, String> {
         "/copy" => Ok(Command::Copy),
 
         "/pet" if args.is_empty() => Ok(Command::Pets),
+
+        "/agent" if args.is_empty() => Ok(Command::Agent),
 
         "/f" | "/find" => Ok(Command::Find(args.into())),
 
@@ -362,7 +367,7 @@ mod tests {
     #[test]
 
     fn autocomplete_browses_empty_input_and_leaves_arguments_alone() {
-        assert_eq!(suggestions("").len(), 8);
+        assert_eq!(suggestions("").len(), 9);
 
         assert!(parse("/resume").is_err());
 
@@ -375,6 +380,7 @@ mod tests {
         assert_eq!(suggestions("/too").len(), 1);
 
         assert_eq!(parse("/pet"), Ok(Command::Pets));
+        assert_eq!(parse("/agent"), Ok(Command::Agent));
 
         assert_eq!(suggestions("/ti").len(), 1);
 

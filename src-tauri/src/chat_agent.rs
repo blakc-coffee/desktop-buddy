@@ -79,9 +79,24 @@ pub fn sign_in_message(agent: Agent) -> String {
     format!("Sign in to {}", agent.label())
 }
 
-/// The agent whose sign-in a failed answer asked for, if any.
-pub fn sign_in_needed(message: &str) -> Option<Agent> {
-    AGENTS.into_iter().find(|agent| message == sign_in_message(*agent))
+/// The agent whose last answer failed for lack of sign-in; the bar offers its sign-in row.
+static SIGN_IN: std::sync::Mutex<Option<Agent>> = std::sync::Mutex::new(None);
+
+pub fn flag_sign_in(agent: Option<Agent>) {
+    *SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()) = agent;
+}
+
+pub fn sign_in_pending() -> Option<Agent> {
+    *SIGN_IN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The muted footer label naming the connected agent.
+pub fn status_label(chosen: Option<Agent>, installed: impl Fn(Agent) -> bool) -> String {
+    match chosen {
+        Some(agent) if installed(agent) => format!("{} · ready", agent.key()),
+        Some(agent) => format!("{} · not installed", agent.key()),
+        None => "no agent · /agent".into(),
+    }
 }
 
 /// Errors that mean the CLI is installed but not signed in.
@@ -119,7 +134,9 @@ mod tests {
         assert_eq!(route(None, |_| true), Err(NO_AGENT));
         assert_eq!(route(Some(Agent::Codex), |_| false), Err(NO_AGENT));
         assert_eq!(route(Some(Agent::Antigravity), |_| true), Ok(Agent::Antigravity));
-        assert_eq!(sign_in_needed(&sign_in_message(Agent::Codex)), Some(Agent::Codex));
-        assert_eq!(sign_in_needed("Codex took too long."), None);
+        assert_eq!(sign_in_message(Agent::Codex), "Sign in to Codex");
+        assert_eq!(status_label(Some(Agent::Claude), |_| true), "claude · ready");
+        assert_eq!(status_label(Some(Agent::Codex), |_| false), "codex · not installed");
+        assert_eq!(status_label(None, |_| true), "no agent · /agent");
     }
 }

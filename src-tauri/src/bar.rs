@@ -51,6 +51,45 @@ enum Action {
     Open(String),
     OpenFile(String),
     Editor(String),
+    Agent(crate::chat_agent::Agent),
+    Install(crate::chat_agent::Agent),
+    SignIn(crate::chat_agent::Agent),
+}
+/// Completions offered at the top level of the actions menu. Music is reachable from Tools only.
+const MENU_COMPLETIONS: [&str; 1] = ["/codex"];
+/// One row per agent; the label's "  ·  " part renders as the right-aligned status column.
+fn agent_rows(
+    chosen: Option<crate::chat_agent::Agent>,
+    installed: impl Fn(crate::chat_agent::Agent) -> bool,
+) -> Vec<(String, Action)> {
+    crate::chat_agent::AGENTS
+        .into_iter()
+        .map(|agent| {
+            let (status, action) = if !installed(agent) {
+                ("not installed", Action::Install(agent))
+            } else if chosen == Some(agent) {
+                ("connected", Action::Agent(agent))
+            } else {
+                ("ready", Action::Agent(agent))
+            };
+            (format!("{}  ·  {status}", agent.label()), action)
+        })
+        .collect()
+}
+unsafe fn show_agents(app: &tauri::AppHandle) {
+    use crate::chat_agent::{chosen, sign_in_pending, Agent};
+    let mut rows = Vec::new();
+    if let Some(agent) = sign_in_pending() {
+        rows.push((format!("Sign in to {}  ·  opens its console", agent.label()), Action::SignIn(agent)));
+    }
+    rows.extend(agent_rows(chosen(app), Agent::installed));
+    change(|b| b.finder = true);
+    choices(rows);
+    note("Connect an agent");
+}
+fn agent_status(app: &tauri::AppHandle) -> String {
+    use crate::chat_agent::{chosen, status_label, Agent};
+    status_label(chosen(app), Agent::installed)
 }
 struct Request {
     app: tauri::AppHandle,
@@ -89,6 +128,7 @@ struct Bar {
     file_search: bool,
     menu_active: bool,
     menu_theme: Option<crate::menu_theme::MenuTheme>,
+    agent_status: String,
 }
 impl Bar {
     fn visible_rows(&self) -> usize {
@@ -185,6 +225,12 @@ unsafe fn refresh() {
         b.file_search = false;
     });
     if text.is_empty() {
+        if let Some(app) = get(|b| b.app.clone()) {
+            if crate::chat_agent::chosen(&app).is_none() || crate::chat_agent::sign_in_pending().is_some() {
+                show_agents(&app);
+                return;
+            }
+        }
         choices(
             commands::suggestions("")
                 .into_iter()
@@ -225,6 +271,7 @@ unsafe fn refresh() {
             | Parsed::Imports
             | Parsed::Copy
             | Parsed::Pets
+            | Parsed::Agent
             | Parsed::Find(_))
     ) {
         let suggestions = commands::suggestions(&text);
@@ -281,6 +328,11 @@ unsafe fn refresh() {
             }
         }
         Ok(Parsed::Tools) => choices(vec![(String::new(), Action::Tools)]),
+        Ok(Parsed::Agent) => {
+            if let Some(app) = get(|b| b.app.clone()) {
+                show_agents(&app);
+            }
+        }
         Ok(Parsed::Panel(destination)) => {
             choices(vec![(String::new(), Action::Panel(destination))])
         }
@@ -465,6 +517,10 @@ unsafe fn execute() {
                 crate::screen_helper::run_command(app.clone(), question, fill);
                 return;
             },
+            Ok(Parsed::Question(_)) if crate::chat_agent::route(crate::chat_agent::chosen(&app), crate::chat_agent::Agent::installed).is_err() => {
+                show_agents(&app);
+                return;
+            }
             Ok(Parsed::Question(question)) => match crate::screen_helper::quick_answer(app.clone(),question) {
                 Ok(()) => { hide(); return; }
                 Err(error) => Err(error),
@@ -522,6 +578,35 @@ unsafe fn execute() {
             note("Pet selected");
             return;
         }
+        Action::Agent(agent) => {
+            crate::chat_agent::choose(&app, agent);
+            crate::chat_agent::flag_sign_in(None);
+            if agent != crate::chat_agent::Agent::Codex {
+                app.state::<Arc<crate::claude_chat::ClaudeState>>().prepare_for(agent);
+            }
+            change(|b| b.agent_status = agent_status(&app));
+            Ok(format!("{} connected. Ask anything.", agent.label()))
+        }
+        Action::Install(agent) => {
+            let url = wide(agent.install_url());
+            let result = windows::Win32::UI::Shell::ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(url.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            );
+            if result.0 as isize > 32 {
+                Ok(format!("Install {}, then type /agent.", agent.label()))
+            } else {
+                Err("Windows could not open the install page.".into())
+            }
+        }
+        Action::SignIn(agent) => crate::chat_agent::open_sign_in(agent).map(|_| {
+            crate::chat_agent::flag_sign_in(None);
+            format!("Finish signing in to {} in its window, then ask again.", agent.label())
+        }),
         Action::Open(path) => open_path(path).map(|_| "Folder opened.".to_string()),
         Action::OpenFile(path) => {
             let path = wide(&path);
@@ -763,7 +848,7 @@ unsafe fn show_actions() {
         command(child, &mut actions, "/settings");
         attach(menu, child, "Pet and appearance");
     }
-    for completion in ["/music", "/codex"] {
+    for completion in MENU_COMPLETIONS {
         command(menu, &mut actions, completion);
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
@@ -1068,6 +1153,7 @@ unsafe fn paint(hwnd: HWND) {
             bar.selected,
             bar.visible_rows(),
             bar.finder,
+            &bar.agent_status,
         )
     });
     let _ = EndPaint(hwnd, &paint);
@@ -1120,6 +1206,7 @@ unsafe fn render_bar(
     selected: usize,
     visible_rows: usize,
     finder: bool,
+    agent_status: &str,
 ) {
     let scale = |value: i32| value * dpi as i32 / 96;
     let muted = mix(palette.ink, palette.surface, 105);
@@ -1211,7 +1298,7 @@ unsafe fn render_bar(
         "↑↓ move   enter open   esc close"
     };
     text(dc, hints, footer, faint, DT_LEFT);
-    let count = format!("{} / {}", (selected + 1).min(rows.len()), rows.len());
+    let count = format!("{agent_status}     {} / {}", (selected + 1).min(rows.len()), rows.len());
     text(dc, &count, footer, muted, DT_RIGHT);
     SelectObject(dc, previous_font);
     for font in [regular, strong, mono] {
@@ -1498,6 +1585,7 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 file_search: false,
                 menu_active: false,
                 menu_theme: None,
+                agent_status: String::new(),
             })
         });
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);
@@ -1506,6 +1594,7 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
         return;
     };
     fill("");
+    change(|b| b.agent_status = agent_status(app));
     position(hwnd, pet, WIDTH, HEIGHT);
     layout(hwnd);
     refresh();
@@ -1568,6 +1657,19 @@ unsafe fn position(hwnd: HWND, pet: HWND, width: i32, height: i32) {
 mod tests {
     use super::*;
     #[test]
+    fn agent_rows_mark_status() {
+        use crate::chat_agent::Agent;
+        let rows = agent_rows(Some(Agent::Claude), |agent| agent != Agent::Codex);
+        assert!(rows[0].0.contains("Claude Code") && rows[0].0.contains("connected"));
+        assert!(rows[1].0.contains("not installed"));
+        assert!(matches!(rows[1].1, Action::Install(Agent::Codex)));
+        assert!(matches!(rows[2].1, Action::Agent(Agent::Antigravity)));
+    }
+    #[test]
+    fn actions_menu_has_no_music() {
+        assert!(!MENU_COMPLETIONS.contains(&"/music"));
+    }
+    #[test]
     fn render_toolbar_palettes_and_scaled_results_without_desktop_input() {
         unsafe {
             let width = 2280i32;
@@ -1628,6 +1730,7 @@ mod tests {
                         0,
                         5,
                         true,
+                        "claude · ready",
                     );
                     let previous_font = SelectObject(dc, font.into());
                     let mut input = RECT {
