@@ -166,8 +166,8 @@ fn get<T>(f: impl FnOnce(&Bar) -> T) -> Option<T> {
 fn change<T>(f: impl FnOnce(&mut Bar) -> T) -> Option<T> {
     BAR.with(|s| s.borrow_mut().as_mut().map(f))
 }
-/// The input line: a mini pet on the left, the typing area, and a "/ commands" hint on the right.
-const PET_SLOT: i32 = 52;
+/// The input line: a paw mark on the left, the typing area, and a "/ commands" hint on the right.
+const PET_SLOT: i32 = 46;
 const HINT_WIDTH: i32 = 92;
 const PLACEHOLDER: &str = "Ask Kitty anything";
 unsafe fn note(text: &str) {
@@ -1185,7 +1185,7 @@ unsafe fn paint(hwnd: HWND) {
             bar.finder,
             &bar.agent_status,
         );
-        render_header(dc, rect, dpi as u32, palette, pet::appearance(), GetWindowTextLengthW(bar.edit) == 0);
+        render_header(dc, rect, dpi as u32, palette, GetWindowTextLengthW(bar.edit) == 0);
     });
     let _ = EndPaint(hwnd, &paint);
 }
@@ -1233,25 +1233,20 @@ unsafe fn render_header(
     rect: RECT,
     dpi: u32,
     palette: crate::pet_art::Palette,
-    pet: crate::pet_art::Appearance,
     hint: bool,
 ) {
     let scale = |value: i32| value * dpi as i32 / 96;
-    // The pet art fills a 128-unit window; at 3/8 of the bar's DPI that is a 48-unit face.
-    let saved = SaveDC(dc);
-    let _ = OffsetViewportOrgEx(dc, scale(4), (scale(HEIGHT) - scale(48)) / 2, None);
-    crate::pet_art::draw_pose_accessory(
-        dc,
-        pet,
-        false,
-        dpi as i32 * 3 / 8,
-        crate::pet_art::AnimationSet::neutral_still_pose(),
-        None,
-        false,
-        None,
-        false,
-    );
-    let _ = RestoreDC(dc, saved);
+    // A 20-unit paw: one pad and four toes, in the accent colour, centred in the input line.
+    let (left, top) = (scale(16), (scale(HEIGHT) - scale(20)) / 2);
+    let brush = CreateSolidBrush(palette.accent);
+    let old_brush = SelectObject(dc, brush.into());
+    let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    for (x0, y0, x1, y1) in [(5, 9, 17, 20), (1, 5, 6, 11), (5, 1, 10, 7), (12, 1, 17, 7), (16, 5, 21, 11)] {
+        let _ = Ellipse(dc, left + scale(x0), top + scale(y0), left + scale(x1), top + scale(y1));
+    }
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(brush.into());
     if !hint {
         return;
     }
@@ -1829,7 +1824,7 @@ mod tests {
         }
     }
     #[test]
-    fn empty_bar_header_draws_the_pet_and_the_command_hint() {
+    fn empty_bar_header_draws_the_paw_and_the_command_hint() {
         unsafe {
             let dpi = 144u32;
             let s = |value: i32| value * dpi as i32 / 96;
@@ -1850,11 +1845,10 @@ mod tests {
             let mut bits = std::ptr::null_mut();
             let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
             let old = SelectObject(dc, bitmap.into());
-            let pet = crate::pet_art::Appearance::Calico;
-            let palette = pet.palette();
+            let palette = crate::pet_art::Appearance::Calico.palette();
             let rect = RECT { left: 0, top: 0, right: width, bottom: height };
             render_bar(dc, rect, dpi, palette, &[], 0, 5, false, "claude · ready");
-            render_header(dc, rect, dpi, palette, pet, true);
+            render_header(dc, rect, dpi, palette, true);
             let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
             let bgr = |c: u32| (c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff);
             let surface = bgr(palette.surface.0);
@@ -1864,7 +1858,7 @@ mod tests {
                     .filter(|(x, y)| pixels[(y * width + x) as usize] & 0xffffff != surface)
                     .count()
             };
-            assert!(painted(s(8), s(PET_SLOT)) > 300, "mini pet missing");
+            assert!(painted(s(8), s(PET_SLOT)) > 300, "paw missing");
             assert!(painted(width - s(16) - s(HINT_WIDTH), width - s(16)) > 60, "command hint missing");
             assert!(painted(s(PET_SLOT) + s(8), width - s(16) - s(HINT_WIDTH) - s(8)) == 0, "input area must stay clear");
             if let Some(path) = std::env::var_os("BUDDY_BAR_HEADER_PREVIEW") {
