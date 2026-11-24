@@ -52,6 +52,7 @@ enum Action {
     OpenFile(String),
     Editor(String),
     Agent(crate::chat_agent::Agent),
+    StartFocus(String),
     Install(crate::chat_agent::Agent),
     SignIn(crate::chat_agent::Agent),
 }
@@ -146,6 +147,9 @@ struct Bar {
     menu_active: bool,
     menu_theme: Option<crate::menu_theme::MenuTheme>,
     agent_status: String,
+    /// True while the bar was opened by the greeting and the next plain Enter answers it.
+    focus_prompt: bool,
+    placeholder: &'static str,
 }
 impl Bar {
     fn visible_rows(&self) -> usize {
@@ -170,12 +174,49 @@ fn change<T>(f: impl FnOnce(&mut Bar) -> T) -> Option<T> {
 const PET_SLOT: i32 = 46;
 const HINT_WIDTH: i32 = 92;
 const PLACEHOLDER: &str = "Ask Kitty anything";
+/// The greeting hides itself if it is not answered within a minute.
+const GREETING_TIMER: usize = 41;
+pub fn greeting_line(first_run: bool) -> &'static str {
+    if first_run {
+        "Hi, I'm Kitty. What are we working on?"
+    } else {
+        "What are we working on?"
+    }
+}
+/// One greeting a day at most, never over a pinned focus, never in Quiet mode.
+pub fn should_greet(focus_pinned_today: bool, asked_today: bool, quiet: bool) -> bool {
+    !focus_pinned_today && !asked_today && !quiet
+}
+#[derive(Debug, PartialEq)]
+enum EnterKind {
+    Focus(String),
+    Normal,
+}
+/// While the greeting is open, plain words answer it; commands still run as commands.
+fn enter_kind(focus_prompt: bool, text: &str) -> EnterKind {
+    let text = text.trim();
+    if focus_prompt && !text.is_empty() && !text.starts_with('/') {
+        EnterKind::Focus(text.to_string())
+    } else {
+        EnterKind::Normal
+    }
+}
+/// Shows the bar beside the pet with the greeting as its placeholder, without taking focus.
+pub unsafe fn greet(app: &tauri::AppHandle, pet: HWND, first_run: bool) {
+    if get(|b| IsWindowVisible(b.hwnd).as_bool()).unwrap_or(false) {
+        return;
+    }
+    open(app, pet, Some(greeting_line(first_run)));
+    if let Some(hwnd) = get(|b| b.hwnd) {
+        let _ = SetTimer(Some(hwnd), GREETING_TIMER, 60_000, None);
+    }
+}
 unsafe fn note(text: &str) {
-    if let Some((hwnd, edit, status)) = get(|b| (b.hwnd, b.edit, b.status)) {
+    if let Some((hwnd, edit, status, placeholder)) = get(|b| (b.hwnd, b.edit, b.status, b.placeholder)) {
         let value = wide(text);
         let empty = GetWindowTextLengthW(edit) == 0;
         let cue = wide(match (empty, text.is_empty()) {
-            (true, true) => PLACEHOLDER,
+            (true, true) => placeholder,
             (true, false) => text,
             _ => "",
         });
@@ -250,7 +291,8 @@ unsafe fn refresh() {
         b.file_search = false;
     });
     if text.is_empty() {
-        if let Some(app) = get(|b| b.app.clone()) {
+        // While greeting, the question owns the empty bar; the agent picker waits for a normal open.
+        if let Some(app) = get(|b| (!b.focus_prompt).then(|| b.app.clone())).flatten() {
             if crate::chat_agent::chosen(&app).is_none() || crate::chat_agent::sign_in_pending().is_some() {
                 show_agents(&app);
                 return;
@@ -515,6 +557,24 @@ unsafe fn execute() {
     }) else {
         return;
     };
+    if let EnterKind::Focus(title) = enter_kind(get(|b| b.focus_prompt).unwrap_or(false), &contents()) {
+        change(|b| {
+            b.focus_prompt = false;
+            b.placeholder = PLACEHOLDER;
+        });
+        if let Some(hwnd) = get(|b| b.hwnd) {
+            let _ = KillTimer(Some(hwnd), GREETING_TIMER);
+        }
+        fill("");
+        change(|b| b.finder = true);
+        match crate::add_focus(&app, &title) {
+            Ok(id) => {
+                choices(vec![("Start 25 min focus  ·  pinned as today's focus".into(), Action::StartFocus(id))]);
+            }
+            Err(error) => choices(vec![(error, Action::Feedback)]),
+        }
+        return;
+    }
     // Screen commands execute on the first Enter, even while a completion row is selected.
     if let Ok(Parsed::Screen { question, fill }) = commands::parse(&contents()) {
         hide();
@@ -612,6 +672,8 @@ unsafe fn execute() {
             change(|b| b.agent_status = agent_status(&app));
             Ok(format!("{} connected. Ask anything.", agent.label()))
         }
+        Action::StartFocus(id) => crate::focus_timer(&app, id)
+            .map(|_| "Focus started · 25 min".to_string()),
         Action::Install(agent) => {
             let url = wide(agent.install_url());
             let result = windows::Win32::UI::Shell::ShellExecuteW(
@@ -1409,6 +1471,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             hide();
             LRESULT(0)
         }
+        WM_TIMER if wp.0 == GREETING_TIMER => {
+            let _ = KillTimer(Some(hwnd), GREETING_TIMER);
+            let untouched = get(|b| b.focus_prompt && GetWindowTextLengthW(b.edit) == 0).unwrap_or(false);
+            if untouched && GetForegroundWindow() != hwnd {
+                hide();
+            }
+            LRESULT(0)
+        }
         WM_MOUSEWHEEL => {
             browse(((wp.0 >> 16) as i16) < 0);
             LRESULT(0)
@@ -1589,6 +1659,10 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
             return;
         }
     }
+    open(app, pet, None);
+}
+/// Opens the bar. A greeting opens it without taking focus and with the question as placeholder.
+unsafe fn open(app: &tauri::AppHandle, pet: HWND, greeting: Option<&'static str>) {
     if get(|b| b.hwnd).is_none() {
         let instance = match GetModuleHandleW(None) {
             Ok(v) => v,
@@ -1677,6 +1751,8 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 menu_active: false,
                 menu_theme: None,
                 agent_status: String::new(),
+                focus_prompt: false,
+                placeholder: PLACEHOLDER,
             })
         });
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);
@@ -1684,18 +1760,31 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     let Some((hwnd, edit)) = get(|b| (b.hwnd, b.edit)) else {
         return;
     };
+    let activate = greeting.is_none();
+    let _ = KillTimer(Some(hwnd), GREETING_TIMER);
+    change(|b| {
+        b.focus_prompt = !activate;
+        b.placeholder = greeting.unwrap_or(PLACEHOLDER);
+    });
     fill("");
     change(|b| b.agent_status = agent_status(app));
     position(hwnd, pet, WIDTH, HEIGHT);
     layout(hwnd);
     refresh();
-    let _ = ShowWindow(hwnd, SW_SHOW);
-    let _ = SetForegroundWindow(hwnd);
-    let _ = SetFocus(Some(edit));
+    if activate {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(Some(edit));
+    } else {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
     let module = GetModuleHandleW(None).ok().map(Into::into);
     let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_mouse), module, 0).ok();
     change(|bar| bar.click_hook = hook);
     crate::pet::bar_visibility(app, IsWindowVisible(hwnd).as_bool());
+    if !activate {
+        return;
+    }
     // Only the connected agent is warmed on open; Codex keeps its own warm path for screen commands.
     if let Some(agent) = crate::chat_agent::chosen(app)
         .filter(|agent| *agent != crate::chat_agent::Agent::Codex && agent.installed())
@@ -1876,6 +1965,22 @@ mod tests {
             let _ = DeleteObject(bitmap.into());
             let _ = DeleteDC(dc);
         }
+    }
+    #[test]
+    fn greeting_rules() {
+        assert!(should_greet(false, false, false));
+        assert!(!should_greet(true, false, false));
+        assert!(!should_greet(false, true, false));
+        assert!(!should_greet(false, false, true));
+        assert_eq!(greeting_line(false), "What are we working on?");
+        assert!(greeting_line(true).starts_with("Hi, I'm Kitty."));
+    }
+    #[test]
+    fn plain_open_is_not_a_focus_answer() {
+        assert_eq!(enter_kind(false, "essay"), EnterKind::Normal);
+        assert_eq!(enter_kind(true, " essay draft "), EnterKind::Focus("essay draft".into()));
+        assert_eq!(enter_kind(true, "/t 5m"), EnterKind::Normal);
+        assert_eq!(enter_kind(true, "   "), EnterKind::Normal);
     }
     #[test]
     fn actions_menu_has_no_music() {

@@ -233,6 +233,24 @@ fn focus_for_today(setting: Option<&str>, today: &str, items: &[Item]) -> Option
     }
     items.iter().find(|i| i.kind == "todo" && !i.done && i.id == id).cloned()
 }
+/// Saves the greeting's answer as a todo and pins it as today's focus. Returns the todo id.
+pub(crate) fn add_focus(app: &tauri::AppHandle, title: &str) -> Result<String, String> {
+    let core = app.state::<Shared>();
+    let db = core.db.lock().map_err(err)?;
+    let item = Item { id: new_id(), kind: "todo".into(), title: clip_title(title), created_at: now(), ..Default::default() };
+    validate(&item)?;
+    put(&db, &item)?;
+    pin_focus(&db, &item.id)?;
+    drop(db);
+    changed(app, &core);
+    Ok(item.id)
+}
+pub(crate) fn focus_pinned_today(app: &tauri::AppHandle) -> bool {
+    let Some(core) = app.try_state::<Shared>() else { return false };
+    let Ok(db) = core.db.lock() else { return false };
+    let setting: Option<String> = db.query_row("SELECT value FROM settings WHERE key='focus'", [], |row| row.get(0)).ok();
+    rows(&db).is_ok_and(|items| focus_for_today(setting.as_deref(), &today(), &items).is_some())
+}
 pub(crate) fn pin_focus(db: &Connection, id: &str) -> Result<(), String> {
     let value = if id.is_empty() { String::new() } else { format!("{id}|{}", today()) };
     db.execute("INSERT INTO settings(key,value) VALUES('focus',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])
@@ -247,7 +265,11 @@ fn set_focus(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> R
 }
 /// Starts a 25-minute timer linked to the todo, titled like it.
 #[tauri::command]
-fn start_focus(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> Result<(), String> {
+fn start_focus(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    focus_timer(&app, id)
+}
+pub(crate) fn focus_timer(app: &tauri::AppHandle, id: String) -> Result<(), String> {
+    let core = app.state::<Shared>();
     let db = core.db.lock().map_err(err)?;
     let todo = get(&db, &id)?;
     if todo.kind != "todo" {
@@ -255,8 +277,8 @@ fn start_focus(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) ->
     }
     start_timer_in(&db, todo.title, 25, todo.project_id, Some(id), &core.run)?;
     drop(db);
-    changed(&app, &core);
-    pet::cue(&app, pet_art::Cue::FocusStart);
+    changed(app, &core);
+    pet::cue(app, pet_art::Cue::FocusStart);
     Ok(())
 }
 #[tauri::command]
@@ -1167,6 +1189,7 @@ fn main() {
             match pet::start(app.handle().clone(), !tray_only) {
                 Ok(control) => {
                     app.manage(control);
+                    pet::greet_later(app.handle().clone());
                 }
                 Err(e) => {
                     let open = MenuItem::with_id(app, "recovery-open", "Open Desktop Buddy", true, None::<&str>)?;

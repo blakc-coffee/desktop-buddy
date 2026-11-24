@@ -38,6 +38,7 @@ const EXPLAINING: u32 = WM_APP + 23;
 const THINKING: u32 = WM_APP + 24;
 const WATCH_BUBBLE: u32 = WM_APP + 25;
 const QUIET: u32 = WM_APP + 26;
+const GREET: u32 = WM_APP + 27;
 const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
@@ -1211,6 +1212,21 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             LRESULT(0)
         }
+        GREET => {
+            if let Some(app) = with_state(|s| s.app.clone()) {
+                let today = crate::today();
+                let asked = setting(&app, "focus_asked").as_deref() == Some(today.as_str());
+                if IsWindowVisible(hwnd).as_bool()
+                    && crate::bar::should_greet(crate::focus_pinned_today(&app), asked, quiet(&app))
+                {
+                    let first_run = setting(&app, "first_run_done").is_none();
+                    save(&app, "focus_asked", &today);
+                    save(&app, "first_run_done", "1");
+                    crate::bar::greet(&app, hwnd, first_run);
+                }
+            }
+            LRESULT(0)
+        }
         CLOSE_COMMANDS => {
             crate::bar::dismiss();
             LRESULT(0)
@@ -1639,6 +1655,13 @@ fn message(app: &tauri::AppHandle, msg: u32) -> Result<(), String> {
         return Err("Pet window is unavailable.".into());
     }
     unsafe { PostMessageW(Some(HWND(hwnd as _)), msg, WPARAM(0), LPARAM(0)).map_err(err) }
+}
+/// Asks "What are we working on?" a few seconds after start, at most once a day.
+pub fn greet_later(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        let _ = message(&app, GREET);
+    });
 }
 pub fn refresh_indicators(app: &tauri::AppHandle) {
     let _ = message(app, REFRESH_INDICATORS);
