@@ -1073,7 +1073,7 @@ unsafe fn paint(hwnd: HWND) {
     let _ = EndPaint(hwnd, &paint);
 }
 /// Blends `a` toward `b` by `t`/255. GDI text has no alpha, so muted ink is precomputed per paint.
-fn mix(a: COLORREF, b: COLORREF, t: u32) -> COLORREF {
+pub(crate) fn mix(a: COLORREF, b: COLORREF, t: u32) -> COLORREF {
     let channel = |shift: u32| {
         let (x, y) = ((a.0 >> shift) & 255, (b.0 >> shift) & 255);
         ((x * (255 - t) + y * t) / 255) << shift

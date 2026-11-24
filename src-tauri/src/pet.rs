@@ -777,6 +777,9 @@ unsafe fn persist_position(hwnd: HWND) {
 struct PetTimer {
     id: String,
     clock: TimerClock,
+    /// Full length in seconds, so the fuse can show how much is left.
+    total: u64,
+    title: String,
 }
 
 enum TimerClock {
@@ -817,10 +820,6 @@ enum ReminderMark {
 }
 
 impl Indicators {
-    fn shows_todo(&self) -> bool {
-        self.todo_count > 0 || self.reminder.is_some()
-    }
-
     fn visible_timer(&self) -> Option<&PetTimer> {
         self.timer.as_ref().filter(|timer| timer.display().is_some())
     }
@@ -847,6 +846,8 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                     let left = remaining(&item, now(), ticks(), &core.run);
                     if left > 0 {
                         indicators.timer = Some(PetTimer {
+                            total: timer_total(&item),
+                            title: item.title,
                             id: item.id,
                             clock: TimerClock::Running(Instant::now() + Duration::from_millis(left as u64)),
                         });
@@ -854,6 +855,8 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                 }
                 "timer" if item.state == "paused" && paused.is_none() => {
                     paused = Some(PetTimer {
+                        total: timer_total(&item),
+                        title: item.title,
                         id: item.id,
                         clock: TimerClock::Paused((item.remaining_ms.max(0) as u64).div_ceil(1000)),
                     });
@@ -878,6 +881,10 @@ unsafe fn update_countdown_tick(hwnd: HWND, indicators: &Indicators) {
     if IsWindowVisible(hwnd).as_bool() && indicators.is_counting() {
         let _ = SetTimer(Some(hwnd), COUNTDOWN_TIMER, 1000, None);
     }
+}
+
+fn timer_total(item: &Item) -> u64 {
+    (item.duration_ms.max(0) as u64).div_ceil(1000).max(1)
 }
 
 fn countdown_label(seconds: u64) -> String {
@@ -926,6 +933,62 @@ unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: CO
     let len = text.len() - 1;
     DrawTextW(dc, &mut text[..len], &mut rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 }
+/// Floor fuse: a surface plate under the pet whose top edge burns down as the timer runs.
+/// The plate is needed because the window is colour-keyed black, so bare text would fringe.
+unsafe fn draw_timer(dc: HDC, rect: RECT, left: u64, total: u64, running: bool, title: Option<&str>,
+    palette: pet_art::Palette, quiet: bool) {
+    let mix = crate::bar::mix;
+    let fill_rect = |area: RECT, color: COLORREF| {
+        let brush = CreateSolidBrush(color);
+        FillRect(dc, &area, brush);
+        let _ = DeleteObject(brush.into());
+    };
+    let plate = CreateSolidBrush(palette.surface);
+    let old_brush = SelectObject(dc, plate.into());
+    let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let _ = RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+    let (start, end, y) = (rect.left + 6, rect.right - 6, rect.top + 3);
+    fill_rect(RECT { left: start, top: y, right: end, bottom: y + 2 }, mix(palette.surface, palette.ink, 64));
+    let burned = start + ((end - start) as u64 * left.min(total) / total.max(1)) as i32;
+    let fuse = if running { palette.accent } else { mix(palette.surface, palette.ink, 140) };
+    fill_rect(RECT { left: start, top: y, right: burned, bottom: y + 2 }, fuse);
+    if running && !quiet {
+        // The 1 s countdown repaint alternates the spark size, so the glow flickers for free.
+        let radius = if left % 2 == 0 { 3 } else { 2 };
+        let spark = CreateSolidBrush(palette.accent);
+        SelectObject(dc, spark.into());
+        let _ = Ellipse(dc, burned - radius, y + 1 - radius, burned + radius + 1, y + 2 + radius);
+        let core = CreateSolidBrush(mix(palette.accent, COLORREF(0x00FF_FFFF), 150));
+        SelectObject(dc, core.into());
+        let _ = Ellipse(dc, burned - 1, y, burned + 2, y + 3);
+        SelectObject(dc, plate.into());
+        let _ = DeleteObject(spark.into());
+        let _ = DeleteObject(core.into());
+    }
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(plate.into());
+    SetBkMode(dc, TRANSPARENT);
+    let mut row = RECT { left: rect.left + 7, top: rect.top + 5, right: rect.right - 6, bottom: rect.bottom };
+    let mut time = wide(&countdown_label(left));
+    let len = time.len() - 1;
+    let mut measured = row;
+    DrawTextW(dc, &mut time[..len], &mut measured, DT_SINGLELINE | DT_CALCRECT);
+    SetTextColor(dc, if running { palette.accent } else { palette.ink });
+    DrawTextW(dc, &mut time[..len], &mut row, DT_SINGLELINE | DT_VCENTER);
+    let Some(title) = title else { return };
+    let label = if running { title } else { "paused" };
+    let font = CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"));
+    let previous = SelectObject(dc, font.into());
+    SetTextColor(dc, mix(palette.surface, palette.ink, 170));
+    row.left = measured.right + 6;
+    let mut text = wide(label);
+    let len = text.len() - 1;
+    DrawTextW(dc, &mut text[..len], &mut row, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(dc, previous);
+    let _ = DeleteObject(font.into());
+}
 fn change_pet_timer(app: tauri::AppHandle, (id, action): (String, &'static str)) {
     if let Some(core) = app.try_state::<Shared>() {
         let _ = timer_action(app.clone(), core, id, action.into());
@@ -971,11 +1034,12 @@ unsafe fn paint(hwnd: HWND) {
             _ => None,
         });
         let bar_open = state.control.status.lock().is_ok_and(|status| status.command_bar_visible);
-        let timer = state.indicators.visible_timer().and_then(PetTimer::display);
-        let awake = file_motion.is_some() || bar_open || timer.is_some_and(|(_, running)| running)
+        let timer = state.indicators.visible_timer().and_then(|timer| timer.display().map(|(left, running)|
+            (left, running, timer.total, timer.title.clone(), state.control.quiet.load(Ordering::SeqCst))));
+        let awake = file_motion.is_some() || bar_open || timer.as_ref().is_some_and(|timer| timer.1)
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
-        let paw = state.indicators.shows_todo().then_some((
-            matches!(state.indicators.reminder, Some(ReminderMark::Due)), state.indicators.todo_count));
+        // The todo token is permanent fast access, so it is drawn even when the list is empty.
+        let paw = (matches!(state.indicators.reminder, Some(ReminderMark::Due)), state.indicators.todo_count);
         let importing = state.control.importing.load(Ordering::SeqCst)
             && state.control.active_import.load(Ordering::SeqCst) == state.control.import_generation.load(Ordering::SeqCst);
         let notice = if importing { Some("Importing…") }
@@ -996,19 +1060,18 @@ unsafe fn paint(hwnd: HWND) {
     pet_art::draw_pose_accessory(dc, appearance, hover, dpi, pose, file_motion, awake || thinking.is_some(), cue, nerdy);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
-    let font = if count > 0 || timer.is_some() || paw.is_some() || notice.is_some() {
+    let font = if count > 0 || timer.is_some() || paw.1 > 0 || notice.is_some() {
         CreateFontW(-13, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"))
     } else {
         HFONT::default()
     };
     let previous_font = (!font.0.is_null()).then(|| SelectObject(dc, font.into()));
-    if let Some((due, pending)) = paw {
-        pet_art::draw_todo_icon(dc, appearance, due);
-        if pending > 0 {
-            let label = if pending > 9 { "9+".into() } else { pending.to_string() };
-            badge(dc, RECT { left: 29, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
-        }
+    let (due, pending) = paw;
+    pet_art::draw_todo_icon(dc, appearance, due);
+    if pending > 0 {
+        let label = if pending > 9 { "9+".into() } else { pending.to_string() };
+        badge(dc, RECT { left: 29, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
     }
     if let Some(label) = notice {
         badge(dc, NOTICE_BOUNDS, label, palette.surface, palette.accent);
@@ -1019,11 +1082,8 @@ unsafe fn paint(hwnd: HWND) {
         badge(dc, RECT { left: 9, top: 111, right: if compact { 48 } else { 119 }, bottom: 132 },
             &label, palette.surface, palette.ink);
     }
-    if let Some((left, running)) = timer {
-        let time = countdown_label(left);
-        let label = if count > 0 { time } else if running { format!("Ⅱ  {time}") } else { format!("▶  {time}") };
-        let (surface, ink) = if running { (palette.accent, palette.surface) } else { (palette.surface, palette.accent) };
-        badge(dc, timer_bounds(count > 0), &label, surface, ink);
+    if let Some((left, running, total, title, quiet)) = timer {
+        draw_timer(dc, timer_bounds(count > 0), left, total, running, (count == 0).then_some(title.as_str()), palette, quiet);
     }
     if let Some(previous_font) = previous_font {
         SelectObject(dc, previous_font);
@@ -1315,8 +1375,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         let r = timer_bounds(!s.files.is_empty());
                         let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
                         let paw = TODO_BOUNDS;
-                        let hits_paw = s.indicators.shows_todo()
-                            && x >= paw.left && x < paw.right && y >= paw.top && y < paw.bottom;
+                        let hits_paw = x >= paw.left && x < paw.right && y >= paw.top && y < paw.bottom;
                         (s.app.clone(), s.indicators.visible_timer().filter(|_| hit).map(|timer| (timer.id.clone(), timer.action())), hits_paw)
                     }) {
                         if let Some(timer) = timer {
@@ -1846,6 +1905,16 @@ mod tests {
                     let _ = SetWindowExtEx(dc, 96, 96, None);
                     let _ = SetViewportExtEx(dc, 192, 192, None);
                     pet_art::draw_todo_icon(dc, appearance, held);
+                    let font = CreateFontW(-13, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"));
+                    let previous = SelectObject(dc, font.into());
+                    match row {
+                        0 => draw_timer(dc, timer_bounds(false), 930, 1500, true, Some("Algorithms practice"), appearance.palette(), false),
+                        1 => draw_timer(dc, timer_bounds(true), 312, 600, false, None, appearance.palette(), false),
+                        _ => draw_timer(dc, timer_bounds(false), 312, 600, false, Some("Stretch"), appearance.palette(), true),
+                    }
+                    SelectObject(dc, previous);
+                    let _ = DeleteObject(font.into());
                     let _ = RestoreDC(dc, saved);
                 }
             }
