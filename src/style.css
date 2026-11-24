@@ -97,13 +97,66 @@ body:has(.todo-window) {
 @media (prefers-reduced-motion: reduce) {
   .todo-check-row .todo-remove { transition: none; }
 }
-.todo-check-row input[type="checkbox"] {
-  appearance: auto;
-  width: 18px;
-  height: 18px;
-  accent-color: var(--todo-accent);
+/* Paw-stamp todo check. The native checkbox stays (keyboard, screen readers, forms);
+   only its drawing changes: a dashed slot that gets stamped with a tilted paw. */
+:is(.overview-todo, .todo-check-row) input[type="checkbox"],
+input.checkbox {
+  appearance: none;
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  margin: 0;
+  border: 1.5px dashed var(--faint);
+  border-radius: 6px;
+  background: none;
+  color: var(--accent);
   cursor: pointer;
-  flex: 0 0 18px;
+  transition: border-color 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.todo-window input[type="checkbox"] {
+  border-color: var(--todo-outline);
+  color: var(--todo-accent);
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]::before,
+input.checkbox::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cellipse cx='12' cy='16.2' rx='5.4' ry='4.6'/%3E%3Cellipse cx='5.2' cy='10.6' rx='2.2' ry='2.8'/%3E%3Cellipse cx='9.4' cy='6.4' rx='2.2' ry='2.9'/%3E%3Cellipse cx='14.6' cy='6.4' rx='2.2' ry='2.9'/%3E%3Cellipse cx='18.8' cy='10.6' rx='2.2' ry='2.8'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0;
+  transform: scale(1.8) rotate(-14deg);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    opacity 120ms ease-out;
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]:checked,
+input.checkbox:checked {
+  border-color: transparent;
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]:checked::before,
+input.checkbox:checked::before {
+  opacity: 1;
+  transform: scale(1) rotate(-14deg);
+}
+@media (hover: hover) {
+  :is(.overview-todo, .todo-check-row) input[type="checkbox"]:not(:checked):hover,
+  input.checkbox:not(:checked):hover {
+    border-color: currentColor;
+  }
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]:focus-visible,
+input.checkbox:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.overview-todo, .todo-check-row) input[type="checkbox"]::before,
+  input.checkbox::before {
+    transform: rotate(-14deg);
+    transition: opacity 100ms ease-out;
+  }
 }
 .todo-check-row input[type="text"],
 .todo-check-row input:not([type]) {
@@ -1747,8 +1800,6 @@ body:has(.todo-window) {
   cursor: pointer;
 }
 .overview-todo input {
-  width: 18px;
-  height: 18px;
   margin: 0 6px;
 }
 .list-empty {
