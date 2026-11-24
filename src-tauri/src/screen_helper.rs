@@ -424,7 +424,7 @@ pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), Strin
                 return crate::apply_command(&app, command).map(done);
             }
             // Claude is the default chat; Codex answers only if Claude could not take the question.
-            match claude_answer(&app,&owned,generation,&question) {
+            match claude_answer(&app,crate::chat_agent::Agent::Claude,&owned,generation,&question) {
                 Ok(crate::claude_chat::Reply::Text(text)) => return Ok(done(text)),
                 Ok(crate::claude_chat::Reply::Action(action)) => {
                     return crate::claude_chat::action_command(&action)
@@ -921,9 +921,9 @@ pub fn dismiss_presentation(app:&tauri::AppHandle){
 }
 #[tauri::command]
 pub fn bubble_dismiss(app:tauri::AppHandle){dismiss_presentation(&app);if let Some(window)=app.get_webview_window("explanation"){let _=window.close();}}
-fn claude_answer(app:&tauri::AppHandle,state:&Arc<ScreenState>,generation:u64,question:&str)->Result<crate::claude_chat::Reply,crate::warm_ai::Failure>{
+fn claude_answer(app:&tauri::AppHandle,agent:crate::chat_agent::Agent,state:&Arc<ScreenState>,generation:u64,question:&str)->Result<crate::claude_chat::Reply,crate::warm_ai::Failure>{
     let check=state.clone();let stream=state.clone();let handle=app.clone();
-    app.state::<Arc<crate::claude_chat::ClaudeState>>().run(crate::claude_chat::Turn{
+    app.state::<Arc<crate::claude_chat::ClaudeState>>().run(agent,crate::claude_chat::Turn{
         prompt:crate::claude_chat::prompt(question),
         cancelled:Box::new(move||check.cancel.load(Ordering::SeqCst)||check.suppressed.load(Ordering::SeqCst)||check.generation.load(Ordering::SeqCst)!=generation),
         publish:Box::new(move|text,first|{

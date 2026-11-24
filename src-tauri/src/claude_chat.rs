@@ -1,7 +1,10 @@
-//! Default chat through a warm Claude Code CLI. Opening the bar starts the process; nothing is
-//! sent before the user submits. One process holds one conversation; dismissing the bubble or
-//! 90 s idle ends it, which bounds RAM. Claude gets no tools, MCP servers, settings or sessions.
+//! Chat through a warm stream-json CLI: Claude Code or Antigravity (`agy`), whichever the user
+//! connected. Opening the bar starts the process; nothing is sent before the user submits. One
+//! process holds one conversation; dismissing the bubble or 90 s idle ends it, which bounds RAM.
+//! Claude gets no tools, MCP servers, settings or sessions; agy runs sandboxed in an empty folder
+//! and is never granted permission approvals, so its tools cannot act.
 use super::*;
+use crate::chat_agent::Agent;
 use crate::warm_ai::Failure;
 use serde_json::{json, Value};
 use std::{
@@ -30,8 +33,8 @@ pub enum Reply {
     Action(Value),
 }
 enum Job {
-    Prepare,
-    Run(Turn, Sender<Result<Reply, Failure>>),
+    Prepare(Agent),
+    Run(Agent, Turn, Sender<Result<Reply, Failure>>),
     Reset,
 }
 #[derive(Default)]
@@ -50,9 +53,9 @@ impl ClaudeState {
         });
         tx.send(job).is_ok()
     }
-    /// Starts the CLI ahead of a question; sends nothing.
-    pub fn prepare(&self) {
-        self.send(Job::Prepare);
+    /// Starts the agent's CLI ahead of a question; sends nothing.
+    pub fn prepare_for(&self, agent: Agent) {
+        self.send(Job::Prepare(agent));
     }
     /// Ends the conversation; the next question starts a fresh one.
     pub fn reset(&self) {
@@ -62,13 +65,13 @@ impl ClaudeState {
     pub fn live(&self) -> bool {
         self.live.load(Ordering::SeqCst)
     }
-    pub fn run(&self, turn: Turn) -> Result<Reply, Failure> {
+    pub fn run(&self, agent: Agent, turn: Turn) -> Result<Reply, Failure> {
         let (tx, rx) = mpsc::channel();
-        if !self.send(Job::Run(turn, tx)) {
-            return Err(unavailable("Claude worker stopped."));
+        if !self.send(Job::Run(agent, turn, tx)) {
+            return Err(unavailable("Chat worker stopped."));
         }
         rx.recv()
-            .map_err(|_| unavailable("Claude worker stopped."))?
+            .map_err(|_| unavailable("Chat worker stopped."))?
     }
 }
 fn unavailable(message: &str) -> Failure {
@@ -90,18 +93,25 @@ fn actor(rx: Receiver<Job>, live: Arc<AtomicBool>) {
         match rx.recv_timeout(wait) {
             Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) | Ok(Job::Reset) => worker = None,
-            Ok(Job::Prepare) => {
+            Ok(Job::Prepare(agent)) => {
+                if worker.as_ref().is_some_and(|w| w.agent != agent) {
+                    worker = None;
+                    blocked = None;
+                }
                 if worker.is_none() && blocked.is_none_or(|until| Instant::now() > until) {
-                    match Worker::spawn() {
+                    match Worker::spawn(agent) {
                         Ok(value) => worker = Some(value),
                         Err(_) => blocked = Some(Instant::now() + RETRY_AFTER),
                     }
                 }
                 last = Instant::now();
             }
-            Ok(Job::Run(turn, reply)) => {
+            Ok(Job::Run(agent, turn, reply)) => {
+                if worker.as_ref().is_some_and(|w| w.agent != agent) {
+                    worker = None;
+                }
                 if worker.is_none() {
-                    match Worker::spawn() {
+                    match Worker::spawn(agent) {
                         Ok(value) => worker = Some(value),
                         Err(message) => {
                             let _ = reply.send(Err(unavailable(&message)));
@@ -110,7 +120,7 @@ fn actor(rx: Receiver<Job>, live: Arc<AtomicBool>) {
                     }
                 }
                 let result = worker.as_mut().map_or_else(
-                    || Err(unavailable("Claude is unavailable.")),
+                    || Err(unavailable("The agent is unavailable.")),
                     |w| w.turn(turn),
                 );
                 if result.is_err() {
@@ -124,6 +134,9 @@ fn actor(rx: Receiver<Job>, live: Arc<AtomicBool>) {
     }
 }
 struct Worker {
+    agent: Agent,
+    /// agy has no system-prompt flag, so its first message carries the instructions.
+    greeted: bool,
     child: std::process::Child,
     input: std::process::ChildStdin,
     rx: Receiver<Value>,
@@ -135,16 +148,26 @@ impl Drop for Worker {
     }
 }
 impl Worker {
-    fn spawn() -> Result<Self, String> {
-        let path = resolve_cli("claude")
+    fn spawn(agent: Agent) -> Result<Self, String> {
+        let path = resolve_cli(agent.cli())
             .filter(|p| p.extension().is_some_and(|e| e == "exe"))
-            .ok_or("Install Claude Code and sign in to use Claude chat.")?;
-        // An empty working folder keeps project CLAUDE.md files and git state out of the chat.
+            .ok_or_else(|| format!("Install {} and sign in to use it for chat.", agent.label()))?;
+        // An empty working folder keeps project instruction files and git state out of the chat.
         let folder = std::env::temp_dir().join("desktop-buddy-claude");
         std::fs::create_dir_all(&folder).map_err(err)?;
         let mut command = std::process::Command::new(path);
-        command
-            .args([
+        let args: &[&str] = match agent {
+            Agent::Antigravity => &[
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--disable-slash-commands",
+                "--sandbox",
+                // agy reads "-p <next arg>" as the prompt; an empty attached value keeps stdin as input.
+                "-p=",
+            ],
+            _ => &[
                 "-p",
                 "--input-format",
                 "stream-json",
@@ -163,7 +186,10 @@ impl Worker {
                 "--no-session-persistence",
                 "--system-prompt",
                 SYSTEM,
-            ])
+            ],
+        };
+        command
+            .args(args)
             .current_dir(&folder)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -174,8 +200,8 @@ impl Worker {
             command.creation_flags(0x08000000);
         }
         let mut child = command.spawn().map_err(err)?;
-        let input = child.stdin.take().ok_or("No Claude input")?;
-        let output = child.stdout.take().ok_or("No Claude output")?;
+        let input = child.stdin.take().ok_or("No agent input")?;
+        let output = child.stdout.take().ok_or("No agent output")?;
         let (tx, rx) = mpsc::sync_channel(256);
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(output);
@@ -194,13 +220,21 @@ impl Worker {
                 }
             }
         });
-        Ok(Self { child, input, rx })
+        Ok(Self { agent, greeted: false, child, input, rx })
     }
     fn turn(&mut self, mut turn: Turn) -> Result<Reply, Failure> {
-        let message = json!({"type":"user","message":{"role":"user","content":turn.prompt}});
+        let label = self.agent.label();
+        let message = match self.agent {
+            Agent::Antigravity => {
+                let content = if self.greeted { turn.prompt.clone() } else { format!("{SYSTEM}\n\n{}", turn.prompt) };
+                json!({"event":"user","message":{"role":"user","content":content}})
+            }
+            _ => json!({"type":"user","message":{"role":"user","content":turn.prompt}}),
+        };
         writeln!(self.input, "{message}")
             .and_then(|_| self.input.flush())
-            .map_err(|_| unavailable("Claude closed before the question was sent."))?;
+            .map_err(|_| unavailable(&format!("{label} closed before the question was sent.")))?;
+        self.greeted = true;
         let started = Instant::now();
         let mut text = String::new();
         let mut shown = false;
@@ -214,7 +248,7 @@ impl Worker {
             if started.elapsed() > TURN_LIMIT {
                 return Err(Failure {
                     submitted: shown,
-                    message: "Claude took too long. Try again.".into(),
+                    message: format!("{label} took too long. Try again."),
                 });
             }
             let value = match self.rx.recv_timeout(Duration::from_millis(100)) {
@@ -223,48 +257,86 @@ impl Worker {
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(Failure {
                         submitted: shown,
-                        message: "Claude stopped responding. Check that Claude Code is signed in."
-                            .into(),
+                        message: format!("{label} stopped responding. Check that it is signed in."),
                     })
                 }
             };
-            match value["type"].as_str() {
-                Some("stream_event") => {
-                    let event = &value["event"];
-                    if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta" {
-                        if let Some(delta) = event["delta"]["text"].as_str() {
-                            if text.len() + delta.len() <= MAX_TEXT {
-                                text.push_str(delta);
-                            }
-                            // Never stream the ACTION protocol line; it is applied, not shown.
-                            if !maybe_action(&text) {
-                                (turn.publish)(&text, !shown);
-                                shown = true;
-                            }
-                        }
+            match event_text(self.agent, &value) {
+                Event::Delta(delta) => {
+                    if text.len() + delta.len() <= MAX_TEXT {
+                        text.push_str(&delta);
+                    }
+                    // Never stream the ACTION protocol line; it is applied, not shown.
+                    if !maybe_action(&text) {
+                        (turn.publish)(&text, !shown);
+                        shown = true;
                     }
                 }
-                Some("result") => {
-                    if value["is_error"].as_bool() == Some(true) {
-                        let reason: String = value["result"]
-                            .as_str()
-                            .unwrap_or("Claude returned an error.")
-                            .chars()
-                            .take(300)
-                            .collect();
-                        return Err(Failure {
-                            submitted: shown,
-                            message: reason,
-                        });
-                    }
-                    if text.is_empty() {
-                        text = value["result"].as_str().unwrap_or_default().to_string();
+                Event::Done(Err(reason)) => {
+                    return Err(Failure {
+                        submitted: shown,
+                        message: reason,
+                    });
+                }
+                Event::Done(Ok(result)) => {
+                    if text.trim().is_empty() {
+                        text = result;
                     }
                     return Ok(reply(&text));
                 }
-                _ => {}
+                Event::Other => {}
             }
         }
+    }
+}
+#[derive(Debug, PartialEq)]
+enum Event {
+    Delta(String),
+    Done(Result<String, String>),
+    Other,
+}
+/// Maps one output line of either CLI to a text delta or the turn's final result.
+fn event_text(agent: Agent, value: &Value) -> Event {
+    let clip = |text: &str| text.chars().take(300).collect::<String>();
+    match agent {
+        Agent::Antigravity => match value["event"].as_str() {
+            Some("step_update") => {
+                let step = &value["step_update"];
+                match step["text_delta"].as_str() {
+                    Some(delta) if step["step_type"] == "agent_response" => Event::Delta(delta.into()),
+                    _ => Event::Other,
+                }
+            }
+            Some("result") => {
+                let result = &value["result"];
+                if result["status"] == "SUCCESS" {
+                    Event::Done(Ok(result["response"].as_str().unwrap_or_default().into()))
+                } else {
+                    Event::Done(Err(clip(result["error"].as_str().unwrap_or("Antigravity returned an error."))))
+                }
+            }
+            _ => Event::Other,
+        },
+        _ => match value["type"].as_str() {
+            Some("stream_event") => {
+                let event = &value["event"];
+                match event["delta"]["text"].as_str() {
+                    Some(delta) if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta" => {
+                        Event::Delta(delta.into())
+                    }
+                    _ => Event::Other,
+                }
+            }
+            Some("result") => {
+                let result = value["result"].as_str().unwrap_or_default();
+                if value["is_error"].as_bool() == Some(true) {
+                    Event::Done(Err(clip(if result.is_empty() { "Claude returned an error." } else { result })))
+                } else {
+                    Event::Done(Ok(result.into()))
+                }
+            }
+            _ => Event::Other,
+        },
     }
 }
 /// Text that is, or may still become, an "ACTION {...}" line.
@@ -368,5 +440,34 @@ mod tests {
         assert!(action_command(&json!({"kind":"reminder","at":"25:00"})).is_err());
         assert!(action_command(&json!({"kind":"delete_files"})).is_err());
         assert_eq!(reply("ACTION not json"), Reply::Text("ACTION not json".into()));
+    }
+    #[test]
+    fn agy_fixture_yields_text() {
+        let mut text = String::new();
+        let mut done = None;
+        for line in include_str!("../tests/fixtures/agy-stream.ndjson").lines() {
+            match event_text(Agent::Antigravity, &serde_json::from_str(line).unwrap()) {
+                Event::Delta(delta) => text.push_str(&delta),
+                Event::Done(result) => done = Some(result),
+                Event::Other => {}
+            }
+        }
+        assert!(text.to_lowercase().contains("ok"));
+        assert!(done.unwrap().unwrap().to_lowercase().contains("ok"));
+        let failed = json!({"event":"result","result":{"status":"ERROR","error":"not authenticated"}});
+        assert_eq!(event_text(Agent::Antigravity, &failed), Event::Done(Err("not authenticated".into())));
+    }
+    #[test]
+    fn claude_events_still_parse() {
+        let delta = json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}});
+        assert_eq!(event_text(Agent::Claude, &delta), Event::Delta("Hi".into()));
+        let error = json!({"type":"result","is_error":true,"result":"Invalid API key · Please run /login"});
+        assert_eq!(event_text(Agent::Claude, &error), Event::Done(Err("Invalid API key · Please run /login".into())));
+    }
+    #[test]
+    fn auth_failure_is_flagged() {
+        assert!(crate::chat_agent::is_auth_error("Invalid API key · Please run /login"));
+        assert!(crate::chat_agent::is_auth_error("not authenticated"));
+        assert!(!crate::chat_agent::is_auth_error("Claude took too long. Try again."));
     }
 }

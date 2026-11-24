@@ -67,6 +67,14 @@ pub fn choose(app: &tauri::AppHandle, agent: Agent) {
     crate::pet::save(app, SETTING, agent.key());
 }
 
+/// Errors that mean the CLI is installed but not signed in.
+pub fn is_auth_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    ["/login", "sign in", "log in", "not authenticated", "unauthorized", "invalid api key", "401"]
+        .iter()
+        .any(|needle| m.contains(needle))
+}
+
 /// Opens the agent's own sign-in in a visible console window.
 pub fn open_sign_in(agent: Agent) -> Result<(), String> {
     let path = resolve_cli(agent.cli()).ok_or_else(|| format!("{} is not installed.", agent.label()))?;

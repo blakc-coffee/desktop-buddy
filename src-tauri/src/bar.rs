@@ -1516,8 +1516,12 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_mouse), module, 0).ok();
     change(|bar| bar.click_hook = hook);
     crate::pet::bar_visibility(app, IsWindowVisible(hwnd).as_bool());
-    // Chat is the default, so only Claude is warmed on open; Codex warms when a screen command is typed.
-    app.state::<Arc<crate::claude_chat::ClaudeState>>().prepare();
+    // Only the connected agent is warmed on open; Codex keeps its own warm path for screen commands.
+    if let Some(agent) = crate::chat_agent::chosen(app)
+        .filter(|agent| *agent != crate::chat_agent::Agent::Codex && agent.installed())
+    {
+        app.state::<Arc<crate::claude_chat::ClaudeState>>().prepare_for(agent);
+    }
     crate::navigation::prepare(app);
 }
 
