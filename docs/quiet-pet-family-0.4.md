@@ -2,7 +2,7 @@
 
 Choose a pet using `/pet` (arrow keys or mouse wheel to browse) or **right-click → Choose pet**. The selection persists and themes the launcher, menus, and tool accents.
 
-The simple native lineup has 11 choices: Calico, Siamese, blue shorthair, Dachshund, Samoyed, Border collie, red panda, otter, capybara, Shiba Inu, and Panda. The existing Calico, Shiba, and Panda remain available.
+The simple native lineup has 9 choices: Calico, Dachshund, Samoyed, Border collie, red panda, otter, capybara, Shiba Inu, and Panda. The existing Calico, Shiba, and Panda remain available.
 
 Todo controls are borderless and retain the same checklist action: cats have fish, dogs have bones, red panda has an apple, otter has a clam, capybara has a leaf, and Panda has bamboo.
 
@@ -19,3 +19,6 @@ Preview order: cats; new dogs; red panda/otter/capybara; original Shiba/Panda. E
 Validation: 76 native tests passed (two deliberate live-inference probes ignored); the previous unchanged frontend passed eight TypeScript tests and 19 headless UI tests (four archived-flow tests skipped). Native coverage includes every selectable pet rendered in all three states and appearance-key/token/context compatibility. Frontend production build passed. The packaged release embeds the frontend through Tauri.
 
 CS learning: share the state machine, specialize the renderer. `Appearance::family()` selects a reusable animation/palette family, while `context_pose()` and the approved artwork own species details. One catalogue feeds both pet choosers so their ordering and available choices cannot drift. To practice, trace a Todo-completed event from the existing cue to a dog's completion reaction in `src-tauri/src/pet_quiet.rs`.
+
+
+Update (24 November 2026): Siamese and blue shorthair were removed at Dharu's request. A saved selection of either falls back to Calico. Their reference PNGs are no longer embedded, which reduces the executable by about 2.3 MB.

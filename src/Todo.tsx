@@ -62,6 +62,9 @@ export default function Todo() {
       off();
     };
   }, []);
+  const [undoable, setUndoable] = useState(false);
+  const undoTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(undoTimer.current), []);
   async function save(command: string, args: Record<string, unknown>) {
     const blocking = command !== "rename_todo";
     if (blocking) setBusy(true);
@@ -69,6 +72,10 @@ export default function Todo() {
     try {
       await call(command, args);
       await refresh();
+      window.clearTimeout(undoTimer.current);
+      setUndoable(command === "remove_item");
+      if (command === "remove_item")
+        undoTimer.current = window.setTimeout(() => setUndoable(false), 10_000);
       return true;
     } catch (e) {
       setError(String(e));
@@ -95,7 +102,17 @@ export default function Todo() {
       ) as CSSProperties)
     : undefined;
   return (
-    <main className="todo-window" style={style}>
+    <main
+      className="todo-window"
+      style={style}
+      onKeyDown={(event) => {
+        const typing = (event.target as HTMLElement).tagName === "INPUT";
+        if (undoable && !typing && event.ctrlKey && event.key === "z") {
+          event.preventDefault();
+          void save("undo_remove", {});
+        }
+      }}
+    >
       <h1>Todo</h1>
       <form onSubmit={(event) => void add(event)} className="todo-capture">
         <input
@@ -113,6 +130,14 @@ export default function Todo() {
       {error && (
         <p role="alert" className="todo-error">
           {error}
+        </p>
+      )}
+      {undoable && (
+        <p role="status" className="todo-undo">
+          Removed.
+          <button type="button" disabled={busy} onClick={() => void save("undo_remove", {})}>
+            Undo
+          </button>
         </p>
       )}
       {!loaded && !error && <p role="status">Loading your checklist…</p>}

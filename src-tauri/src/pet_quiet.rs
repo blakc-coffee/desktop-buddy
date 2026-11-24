@@ -12,14 +12,6 @@ impl Appearance {
                         pose.eye_state = 3;
                     }
                 }
-                Self::Siamese | Self::BlueCat => {
-                    if matches!(cue, Cue::Wake | Cue::ReminderDue) {
-                        pose.ear_deflect = 5;
-                    }
-                    if matches!(cue, Cue::Settle | Cue::FocusPause) {
-                        pose.eye_state = 1;
-                    }
-                }
                 Self::RedPanda => {
                     pose.tail_angle = pose.offset_x.saturating_mul(6);
                     if cue == Cue::TodoDone {

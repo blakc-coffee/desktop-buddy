@@ -22,7 +22,7 @@ pub enum Appearance {
     Calico,
     Panda,
     Husky,
-    Siamese, BlueCat, Dachshund, Samoyed, Collie, RedPanda, Otter, Capybara,
+    Dachshund, Samoyed, Collie, RedPanda, Otter, Capybara,
 }
 
 pub const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
@@ -37,7 +37,7 @@ impl Appearance {
             Self::Calico => "calico",
             Self::Panda => "panda",
             Self::Husky => "husky",
-            Self::Siamese=>"siamese",Self::BlueCat=>"blue-cat",Self::Dachshund=>"dachshund",Self::Samoyed=>"samoyed",Self::Collie=>"collie",Self::RedPanda=>"red-panda",Self::Otter=>"otter",Self::Capybara=>"capybara",
+            Self::Dachshund=>"dachshund",Self::Samoyed=>"samoyed",Self::Collie=>"collie",Self::RedPanda=>"red-panda",Self::Otter=>"otter",Self::Capybara=>"capybara",
         }
     }
 
@@ -46,17 +46,17 @@ impl Appearance {
             "dog" => Self::Dog,
             "calico" => Self::Calico,
             "panda" => Self::Panda,
-            "siamese"=>Self::Siamese,"blue-cat"=>Self::BlueCat,"dachshund"=>Self::Dachshund,"samoyed"=>Self::Samoyed,"collie"=>Self::Collie,"red-panda"=>Self::RedPanda,"otter"=>Self::Otter,"capybara"=>Self::Capybara,
+            "dachshund"=>Self::Dachshund,"samoyed"=>Self::Samoyed,"collie"=>Self::Collie,"red-panda"=>Self::RedPanda,"otter"=>Self::Otter,"capybara"=>Self::Capybara,
             _ => Self::Calico,
         }
     }
 
-    pub fn label(self)->&'static str {match self {Self::Siamese=>"Siamese",Self::BlueCat=>"Blue shorthair",Self::Dachshund=>"Dachshund",Self::Samoyed=>"Samoyed",Self::Collie=>"Border collie",Self::RedPanda=>"Red panda",Self::Otter=>"Otter",Self::Capybara=>"Capybara",Self::Dog=>"Shiba Inu",Self::Panda=>"Panda",_=>"Calico"}}
-    pub fn family(self)->Self {match self {Self::Siamese|Self::BlueCat=>Self::Calico,Self::Dachshund|Self::Samoyed|Self::Collie=>Self::Dog,Self::RedPanda|Self::Otter|Self::Capybara=>Self::Panda,_=>self}}
+    pub fn label(self)->&'static str {match self {Self::Dachshund=>"Dachshund",Self::Samoyed=>"Samoyed",Self::Collie=>"Border collie",Self::RedPanda=>"Red panda",Self::Otter=>"Otter",Self::Capybara=>"Capybara",Self::Dog=>"Shiba Inu",Self::Panda=>"Panda",_=>"Calico"}}
+    pub fn family(self)->Self {match self {Self::Dachshund|Self::Samoyed|Self::Collie=>Self::Dog,Self::RedPanda|Self::Otter|Self::Capybara=>Self::Panda,_=>self}}
     pub fn token(self)->&'static str {match self {Self::RedPanda=>"apple",Self::Otter=>"clam",Self::Capybara=>"leaf",Self::Panda=>"bamboo",_ if self.family()==Self::Dog=>"bone",_=>"fish"}}
     /// Application chrome and UI theme palette.
     pub fn palette(self) -> Palette {
-        if self.family()!=self {let mut palette=self.family().palette();palette.accent=match self {Self::Siamese=>rgb(165,188,204),Self::BlueCat=>rgb(172,175,194),Self::Dachshund=>rgb(207,157,117),Self::Samoyed=>rgb(211,202,214),Self::Collie=>rgb(210,209,196),Self::RedPanda=>rgb(211,145,104),Self::Otter=>rgb(185,151,115),_=>rgb(189,170,122)};return palette;}
+        if self.family()!=self {let mut palette=self.family().palette();palette.accent=match self {Self::Dachshund=>rgb(207,157,117),Self::Samoyed=>rgb(211,202,214),Self::Collie=>rgb(210,209,196),Self::RedPanda=>rgb(211,145,104),Self::Otter=>rgb(185,151,115),_=>rgb(189,170,122)};return palette;}
         match self {
             Self::Cat => Palette {
                 surface: rgb(43, 30, 49),
@@ -1829,7 +1829,6 @@ impl Appearance {
             Self::Calico => &CALICO_SETS,
             Self::Panda => &PANDA_SETS,
             Self::Husky => &HUSKY_SETS,
-            Self::Siamese|Self::BlueCat=>&CAT_SETS,
             Self::Dachshund|Self::Samoyed|Self::Collie=>&DOG_SETS,
             Self::RedPanda=>&CALICO_SETS,
             Self::Otter|Self::Capybara=>&PANDA_SETS,

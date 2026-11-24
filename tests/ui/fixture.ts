@@ -51,7 +51,7 @@ export async function installFixture(
           item("r1", "reminder", "Review the release notes", {
             dueAt: now + 3600000,
           }),
-          item("a1", "attention", "Your focus session finished", {
+          item("due-focus", "attention", "Your focus session finished", {
             source: "Timer finished",
           }),
           item("s1", "shelf", "Implementation notes", {
@@ -224,8 +224,22 @@ export async function installFixture(
         } else if (command === "toggle_item") {
           const value = items.find((item) => item.id === args.id);
           if (value) value.done = !value.done;
-        } else if (command === "remove_item")
+        } else if (command === "remove_item") {
+          root.fixtureRemoved = items.find((item) => item.id === args.id);
           items = items.filter((item) => item.id !== args.id);
+        } else if (command === "undo_remove") {
+          if (root.fixtureRemoved) items.unshift(root.fixtureRemoved);
+          root.fixtureRemoved = undefined;
+        } else if (command === "snooze_item") {
+          const alert = items.find((item) => item.id === args.id);
+          items = items.filter((item) => item.id !== args.id);
+          if (alert)
+            items.unshift(
+              item(crypto.randomUUID(), "reminder", alert.title, {
+                dueAt: now + args.minutes * 60000,
+              }),
+            );
+        }
         else if (command === "start_timer")
           items.unshift(
             item(crypto.randomUUID(), "timer", args.title, {

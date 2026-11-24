@@ -42,7 +42,7 @@ const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
 const NOTICE_TIMER: usize = 4;
-pub const APPEARANCES: [Appearance; 11] = [Appearance::Calico,Appearance::Siamese,Appearance::BlueCat,Appearance::Dachshund,Appearance::Samoyed,Appearance::Collie,Appearance::RedPanda,Appearance::Otter,Appearance::Capybara,Appearance::Dog,Appearance::Panda];
+pub const APPEARANCES: [Appearance; 9] = [Appearance::Calico,Appearance::Dachshund,Appearance::Samoyed,Appearance::Collie,Appearance::RedPanda,Appearance::Otter,Appearance::Capybara,Appearance::Dog,Appearance::Panda];
 const WIDTH: i32 = 128;
 const HEIGHT: i32 = 136;
 #[derive(Clone, Default, Serialize)]
@@ -83,6 +83,7 @@ struct State {
     control: Arc<Control>,
     files: Vec<PathBuf>,
     hold_generation: u64,
+    cleared: Option<ClearedHold>,
     press: Option<(POINT, RECT, bool)>,
     hover: bool,
     explaining: bool,
@@ -96,6 +97,18 @@ struct State {
     motion: Option<(AnimationPhase, usize, bool)>,
     motion_deadline: Option<Instant>,
     drop_notice: Option<Instant>,
+}
+/// What "Clear held references" removed, kept briefly so the clear can be undone.
+struct ClearedHold {
+    files: Vec<PathBuf>,
+    refs: Vec<(PathBuf, crate::held_refs::Reference)>,
+    at: Instant,
+}
+const UNDO_CLEAR: Duration = Duration::from_secs(30);
+impl ClearedHold {
+    fn fresh(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.at) <= UNDO_CLEAR
+    }
 }
 thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 fn wide(s: &str) -> Vec<u16> {
@@ -260,6 +273,7 @@ fn merge_files(existing:&[PathBuf],incoming:Vec<PathBuf>)->Result<Vec<PathBuf>,S
     Ok(result)
 }
 unsafe fn hold(hwnd: HWND, state: &mut State, files: Vec<PathBuf>) {
+    state.cleared = None;
     state.drop_notice = None;
     let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
     match merge_files(&state.files,files) {
@@ -1329,6 +1343,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools"));
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
+                if with_state(|s| s.cleared.as_ref().is_some_and(|c| c.fresh(Instant::now()))) == Some(true) {
+                    let _ = AppendMenuW(menu, MF_STRING, 7, w!("Undo clear"));
+                }
+                let startup = if crate::autostart::enabled() { MF_CHECKED } else { MF_UNCHECKED };
+                let _ = AppendMenuW(menu, MF_STRING | startup, 6, w!("Start with Windows"));
                 if let Ok(pets) = CreatePopupMenu() {
                     for (index, pet) in APPEARANCES.into_iter().enumerate() {
                         let label=wide(pet.label());
@@ -1342,7 +1361,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit"));
                 let action = crate::menu_theme::track(menu, hwnd, p.x, p.y, appearance().palette());
                 match action {
-                    20..=30 => {
+                    20..=28 => {
                         if let Some(app) = with_state(|s| s.app.clone()) {
                             set_appearance(&app, APPEARANCES[action as usize - 20]);
                         }
@@ -1356,6 +1375,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             if let Ok(mut queue)=s.control.import_queue.lock(){queue.clear();}
                             if let Ok(mut pending)=s.control.pending.lock(){pending.clear();}
                             crate::held_preview::clear(&s.app);
+                            s.cleared = (!s.files.is_empty()).then(|| ClearedHold {
+                                refs: crate::held_refs::snapshot(&s.files),
+                                files: s.files.clone(),
+                                at: Instant::now(),
+                            });
                             crate::held_refs::clear();
                             s.files.clear();
                             s.hold_generation = s.hold_generation.wrapping_add(1);
@@ -1367,6 +1391,25 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                     3 => {
                         let _ = PostMessageW(Some(hwnd), HIDE, WPARAM(0), LPARAM(0));
+                    }
+                    6 => {
+                        if let Err(message) = crate::autostart::set(!crate::autostart::enabled()) {
+                            with_state(|s| {
+                                if let Ok(mut status) = s.control.status.lock() {
+                                    status.message = message;
+                                }
+                                publish(s);
+                            });
+                        }
+                    }
+                    7 => {
+                        with_state(|s| {
+                            if let Some(cleared) = s.cleared.take().filter(|c| c.fresh(Instant::now())) {
+                                crate::held_refs::restore(cleared.refs);
+                                hold(hwnd, s, cleared.files);
+                            }
+                        });
+                        let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     5 => {
                         with_state(|s| post_main(&s.app, true));
@@ -1442,6 +1485,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                     control: output.clone(),
                     files: vec![],
                     hold_generation: 0,
+                    cleared: None,
                     press: None,
                     hover: false,
                     explaining: false,

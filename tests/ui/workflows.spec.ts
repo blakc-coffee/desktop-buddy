@@ -629,3 +629,24 @@ test("held previews are compact, safely render text, and open links only on requ
  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((call:any)=>call.command==="held_preview_open").length)).toBe(1);
  expect(await page.evaluate(()=>performance.getEntriesByType("resource").some(entry=>entry.name.includes("/src/App.tsx")))).toBe(false);
 });
+
+test("removed todos can be undone and due alerts snoozed", async ({ page }) => {
+  await page.setViewportSize({ width: 300, height: 420 });
+  await installFixture(page);
+  await page.goto("/?surface=todo");
+  const row = page.getByRole("checkbox", { name: "Complete Review the browser-helper setup", exact: true });
+  await expect(row).toBeVisible();
+  await page.locator(".todo-check-row").first().hover();
+  await page.getByRole("button", { name: "Remove Review the browser-helper setup", exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(row).toBeVisible();
+  await expect(page.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.goto("/");
+  const alert = page.getByText("Your focus session finished", { exact: true });
+  await expect(alert).toBeVisible();
+  await page.getByRole("button", { name: "+10m", exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { fixtureCalls: { command: string; args: unknown }[] }).fixtureCalls.filter((c) => c.command === "snooze_item"))).toEqual([{ command: "snooze_item", args: { id: "due-focus", minutes: 10 } }]);
+});

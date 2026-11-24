@@ -386,7 +386,7 @@ export default function App() {
   useEffect(() => {
     if (!data) return;
     document.documentElement.dataset.theme = data.theme;
-    document.documentElement.dataset.pet = ["calico", "dog", "panda", "siamese", "blue-cat", "dachshund", "samoyed", "collie", "red-panda", "otter", "capybara"].includes(
+    document.documentElement.dataset.pet = ["calico", "dog", "panda", "dachshund", "samoyed", "collie", "red-panda", "otter", "capybara"].includes(
       data.petAppearance || "",
     )
       ? data.petAppearance
@@ -443,8 +443,18 @@ export default function App() {
       throw e;
     }
   }
+  const [undoable, setUndoable] = useState(false),
+    undoTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(undoTimer.current), []);
   const run = (command: string, args: Record<string, unknown> = {}) =>
-    action(command, args).catch(() => {});
+    action(command, args)
+      .then(() => {
+        window.clearTimeout(undoTimer.current);
+        setUndoable(command === "remove_item");
+        if (command === "remove_item")
+          undoTimer.current = window.setTimeout(() => setUndoable(false), 10_000);
+      })
+      .catch(() => {});
   async function submitCapture(e: FormEvent) {
     e.preventDefault();
     const parsed = parseCapture(capture);
@@ -724,6 +734,14 @@ export default function App() {
           {data?.warning && (
             <div className="message warning">{data.warning}</div>
           )}
+          {undoable && (
+            <div className="message notice" role="status">
+              <span>Removed.</span>
+              <button className="small-button" onClick={() => void run("undo_remove")}>
+                Undo
+              </button>
+            </div>
+          )}
           {notice && (
             <div className="message notice" role="status">
               <span>{notice}</span>
@@ -872,6 +890,19 @@ export default function App() {
                               {new Date(i.createdAt).toLocaleString()}
                             </span>
                           </div>
+                          {i.id.startsWith("due-") &&
+                            ([10, 60] as const).map((minutes) => (
+                              <button
+                                key={minutes}
+                                className="small-button"
+                                title={`Snooze ${minutes === 10 ? "10 minutes" : "1 hour"}`}
+                                onClick={() =>
+                                  void run("snooze_item", { id: i.id, minutes })
+                                }
+                              >
+                                {minutes === 10 ? "+10m" : "+1h"}
+                              </button>
+                            ))}
                           <button
                             className="small-button"
                             onClick={() =>

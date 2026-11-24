@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod agents;
+mod autostart;
 mod bar;
 mod commands;
 mod features;
@@ -48,7 +49,10 @@ struct Core {
     warning: Mutex<Option<String>>,
     workers: Mutex<Vec<Arc<Mutex<std::process::Child>>>>,
     agents: Mutex<std::collections::HashMap<String, Arc<agents::Session>>>,
+    /// The most recently removed item and when it was removed, for a short undo window.
+    undo: Mutex<Option<(Item, i64)>>,
 }
+const UNDO_MS: i64 = 10_000;
 type Shared = Arc<Core>;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -182,8 +186,76 @@ fn remove_item(
     db.execute("DELETE FROM items WHERE id=?1", [id])
         .map_err(err)?;
     drop(db);
+    *core.undo.lock().map_err(err)? = Some((i, now()));
     changed(&app, &core);
     Ok(())
+}
+#[tauri::command]
+fn undo_remove(app: tauri::AppHandle, core: tauri::State<Shared>) -> Result<(), String> {
+    let last = core.undo.lock().map_err(err)?.take();
+    let db = core.db.lock().map_err(err)?;
+    restore_removed(&db, last, now())?;
+    drop(db);
+    changed(&app, &core);
+    Ok(())
+}
+fn restore_removed(db: &Connection, last: Option<(Item, i64)>, at: i64) -> Result<(), String> {
+    let Some((item, _)) = last.filter(|(_, removed_at)| at - removed_at <= UNDO_MS) else {
+        return Err("Nothing to undo.".into());
+    };
+    if get(db, &item.id).is_ok() {
+        return Ok(());
+    }
+    validate(&item)?;
+    put(db, &item)
+}
+#[tauri::command]
+fn snooze_item(
+    app: tauri::AppHandle,
+    core: tauri::State<Shared>,
+    id: String,
+    minutes: u32,
+) -> Result<(), String> {
+    let mut db = core.db.lock().map_err(err)?;
+    snooze_alert(&mut db, &id, minutes, now())?;
+    drop(db);
+    changed(&app, &core);
+    pet::cue(&app, pet_art::Cue::ReminderSaved);
+    Ok(())
+}
+/// Reopens the reminder behind a due alert (or creates one for a finished timer) and drops the alert.
+fn snooze_alert(db: &mut Connection, alert_id: &str, minutes: u32, at: i64) -> Result<(), String> {
+    if !(1..=1440).contains(&minutes) {
+        return Err("Snooze between 1 minute and 24 hours.".into());
+    }
+    let alert = get(db, alert_id)?;
+    let Some(original_id) = alert_id
+        .strip_prefix("due-")
+        .filter(|_| alert.kind == "attention")
+    else {
+        return Err("Only due reminders and timers can be snoozed.".into());
+    };
+    let due_at = at + i64::from(minutes) * 60_000;
+    let tx = db.transaction().map_err(err)?;
+    let reminder = match get(&tx, original_id) {
+        Ok(mut original) if original.kind == "reminder" => {
+            original.done = false;
+            original.due_at = due_at;
+            original
+        }
+        _ => Item {
+            id: new_id(),
+            kind: "reminder".into(),
+            title: alert.title.clone(),
+            created_at: at,
+            due_at,
+            ..Default::default()
+        },
+    };
+    put(&tx, &reminder)?;
+    tx.execute("DELETE FROM items WHERE id=?1", [alert_id])
+        .map_err(err)?;
+    tx.commit().map_err(err)
 }
 #[tauri::command]
 fn toggle_item(
@@ -825,6 +897,8 @@ fn main() {
             navigation::acknowledge_navigation,
             save_item,
             remove_item,
+            undo_remove,
+            snooze_item,
             toggle_item,
             rename_todo,
             start_timer,
@@ -883,7 +957,9 @@ fn main() {
                 warning: Mutex::new(None),
                 workers: Mutex::new(vec![]),
                 agents: Mutex::new(std::collections::HashMap::new()),
+                undo: Mutex::new(None),
             });
+            autostart::refresh();
             app.manage(core.clone());
             surfaces::start(app.handle().clone());
             let mut unavailable = Vec::new();
@@ -999,6 +1075,64 @@ mod storage_tests {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE items(id TEXT PRIMARY KEY,kind TEXT NOT NULL,created INTEGER NOT NULL,payload TEXT NOT NULL);").unwrap();
         db
+    }
+    fn alert_for(original: &Item, source: &str) -> Item {
+        Item {
+            id: format!("due-{}", original.id),
+            kind: "attention".into(),
+            title: original.title.clone(),
+            created_at: 5,
+            source: source.into(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn snoozing_a_reminder_alert_reopens_the_same_reminder_and_drops_the_alert() {
+        let mut db = database();
+        let reminder = Item { id: "r1".into(), kind: "reminder".into(), title: "Call home".into(), done: true, due_at: 1_000, created_at: 1, ..Default::default() };
+        put(&db, &reminder).unwrap();
+        put(&db, &alert_for(&reminder, "Reminder due")).unwrap();
+        snooze_alert(&mut db, "due-r1", 10, 50_000).unwrap();
+        let reopened = get(&db, "r1").unwrap();
+        assert!(!reopened.done);
+        assert_eq!(reopened.due_at, 50_000 + 600_000);
+        assert!(get(&db, "due-r1").is_err());
+        assert_eq!(rows(&db).unwrap().len(), 1);
+    }
+    #[test]
+    fn snoozing_a_timer_alert_creates_a_reminder_with_the_timer_title() {
+        let mut db = database();
+        let timer = Item { id: "t1".into(), kind: "timer".into(), title: "Deep work".into(), state: "finished".into(), created_at: 1, ..Default::default() };
+        put(&db, &timer).unwrap();
+        put(&db, &alert_for(&timer, "Timer finished")).unwrap();
+        snooze_alert(&mut db, "due-t1", 60, 0).unwrap();
+        let items = rows(&db).unwrap();
+        let reminder = items.iter().find(|i| i.kind == "reminder").unwrap();
+        assert_eq!((reminder.title.as_str(), reminder.due_at, reminder.done), ("Deep work", 3_600_000, false));
+        assert_eq!(get(&db, "t1").unwrap().state, "finished");
+        assert!(get(&db, "due-t1").is_err());
+    }
+    #[test]
+    fn snooze_rejects_bad_lengths_and_non_alerts_without_changing_data() {
+        let mut db = database();
+        let todo = Item { id: "due-x".into(), kind: "todo".into(), title: "Not an alert".into(), created_at: 1, ..Default::default() };
+        put(&db, &todo).unwrap();
+        assert!(snooze_alert(&mut db, "due-x", 10, 0).is_err());
+        assert!(snooze_alert(&mut db, "due-x", 0, 0).is_err());
+        assert!(snooze_alert(&mut db, "due-x", 1441, 0).is_err());
+        assert!(snooze_alert(&mut db, "missing", 10, 0).is_err());
+        assert_eq!(rows(&db).unwrap().len(), 1);
+    }
+    #[test]
+    fn undo_restores_a_removed_item_only_inside_the_window() {
+        let db = database();
+        let todo = Item { id: "a".into(), kind: "todo".into(), title: "Keep me".into(), created_at: 1, ..Default::default() };
+        assert!(restore_removed(&db, Some((todo.clone(), 0)), UNDO_MS + 1).is_err());
+        assert!(restore_removed(&db, None, 0).is_err());
+        restore_removed(&db, Some((todo.clone(), 0)), UNDO_MS).unwrap();
+        assert_eq!(get(&db, "a").unwrap().title, "Keep me");
+        restore_removed(&db, Some((todo, 0)), 1).unwrap();
+        assert_eq!(rows(&db).unwrap().len(), 1);
     }
     #[test]
     fn completing_a_stale_todo_keeps_its_latest_data_and_never_reopens_it() {
