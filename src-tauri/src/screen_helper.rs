@@ -423,16 +423,18 @@ pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), Strin
             if let Some(command) = crate::commands::natural(&question) {
                 return crate::apply_command(&app, command).map(done);
             }
-            // Claude is the default chat; Codex answers only if Claude could not take the question.
-            match claude_answer(&app,crate::chat_agent::Agent::Claude,&owned,generation,&question) {
-                Ok(crate::claude_chat::Reply::Text(text)) => return Ok(done(text)),
-                Ok(crate::claude_chat::Reply::Action(action)) => {
-                    return crate::claude_chat::action_command(&action)
+            // Only the agent the user connected answers; there is no fallback to another agent.
+            use crate::chat_agent::{self as agents, Agent};
+            let agent = agents::route(agents::chosen(&app), Agent::installed).map_err(String::from)?;
+            if agent != Agent::Codex {
+                return match claude_answer(&app,agent,&owned,generation,&question) {
+                    Ok(crate::claude_chat::Reply::Text(text)) => Ok(done(text)),
+                    Ok(crate::claude_chat::Reply::Action(action)) => crate::claude_chat::action_command(&action)
                         .and_then(|command| crate::apply_command(&app, command))
-                        .map(done);
-                }
-                Err(error) if !error.submitted && !owned.cancel.load(Ordering::SeqCst) => {}
-                Err(error) => return Err(error.message),
+                        .map(done),
+                    Err(error) if agents::is_auth_error(&error.message) => Err(agents::sign_in_message(agent)),
+                    Err(error) => Err(error.message),
+                };
             }
             match warm_answer(&app,&owned,generation,None,None,&question,"gpt-6-luna","none","Quick answer") {
                 Ok(text)=>return Ok(json!({"title":"Quick answer","question":question,"busy":false,"explanation":text})),

@@ -67,6 +67,23 @@ pub fn choose(app: &tauri::AppHandle, agent: Agent) {
     crate::pet::save(app, SETTING, agent.key());
 }
 
+/// Shown, and matched by the bar, when no usable agent is connected.
+pub const NO_AGENT: &str = "Connect an agent: type /agent";
+
+/// The one agent a question goes to; there is no fallback to another agent.
+pub fn route(chosen: Option<Agent>, installed: impl Fn(Agent) -> bool) -> Result<Agent, &'static str> {
+    chosen.filter(|agent| installed(*agent)).ok_or(NO_AGENT)
+}
+
+pub fn sign_in_message(agent: Agent) -> String {
+    format!("Sign in to {}", agent.label())
+}
+
+/// The agent whose sign-in a failed answer asked for, if any.
+pub fn sign_in_needed(message: &str) -> Option<Agent> {
+    AGENTS.into_iter().find(|agent| message == sign_in_message(*agent))
+}
+
 /// Errors that mean the CLI is installed but not signed in.
 pub fn is_auth_error(message: &str) -> bool {
     let m = message.to_lowercase();
@@ -96,5 +113,13 @@ mod tests {
         assert_eq!(Agent::from_key("Claude"), None);
         assert_eq!(Agent::from_key(""), None);
         assert_eq!(Agent::Antigravity.cli(), "agy");
+    }
+    #[test]
+    fn routing_target_follows_setting() {
+        assert_eq!(route(None, |_| true), Err(NO_AGENT));
+        assert_eq!(route(Some(Agent::Codex), |_| false), Err(NO_AGENT));
+        assert_eq!(route(Some(Agent::Antigravity), |_| true), Ok(Agent::Antigravity));
+        assert_eq!(sign_in_needed(&sign_in_message(Agent::Codex)), Some(Agent::Codex));
+        assert_eq!(sign_in_needed("Codex took too long."), None);
     }
 }
