@@ -1462,83 +1462,198 @@ body:has(.todo-window) {
 .app-shell > main {
   min-height: 100vh;
 }
+/* Ledger shell: one surface, type carries the hierarchy, a single accent rule marks
+   "you are here". No filled pills, no badge chips, no marketing subtitles. */
 .app-shell .sidebar {
-  width: 196px;
-  padding: 24px 12px 18px;
+  width: 184px;
+  padding: 22px 0 18px;
   height: 100dvh;
+  background: var(--bg);
 }
 .app-shell .brand {
   gap: 10px;
-  margin: 0 8px 28px;
-}
-.app-shell .brand small {
-  font-size: 11px;
-  line-height: 1.5;
+  margin: 0 20px 28px;
+  font-size: 14px;
+  font-weight: 600;
 }
 .app-shell .brand-mark {
-  width: 34px;
-  height: 36px;
+  width: auto;
+  height: auto;
   color: var(--accent);
-  background: var(--raised);
-  border-radius: 10px;
+  background: none;
 }
 .app-shell .sidebar nav {
-  gap: 4px;
+  gap: 0;
 }
 .app-shell .nav-item {
-  min-height: 42px;
-  border-radius: 7px;
-  padding: 10px 12px;
-  font-size: 13px;
+  min-height: 36px;
+  border-radius: 0;
+  padding: 8px 20px;
+  font-size: 14px;
+  color: var(--muted);
+  box-shadow: inset 2px 0 0 transparent;
+}
+.app-shell .nav-item:hover {
+  background: none;
+  color: var(--text);
 }
 .app-shell .nav-item.selected {
-  background: var(--raised);
-  color: var(--accent);
+  background: none;
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .app-shell .nav-item b {
   margin-left: auto;
-  font-size: 11px;
-  min-width: 20px;
-  text-align: center;
+  background: none;
+  color: var(--accent);
+  font: 500 12px/16px Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+.app-shell .shortcut-hint {
+  padding: 16px 20px 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--faint);
+  display: block;
+}
+.app-shell .shortcut-hint kbd {
+  font: 12px Consolas, ui-monospace, monospace;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0;
 }
 .app-shell .navigation-toggle {
   display: none;
 }
 .app-shell .toolbar {
-  height: 72px;
-  padding: 14px 28px;
+  height: 64px;
+  padding: 12px 32px;
 }
 .app-shell .capture {
-  max-width: 740px;
-  min-height: 42px;
+  max-width: none;
+  height: 40px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
 }
-.app-shell .capture > svg {
+.app-shell .capture input {
+  font-size: 16px;
+  color: var(--text);
+}
+.app-shell .capture input::placeholder {
+  color: var(--faint);
+}
+.app-shell .capture button {
+  padding: 4px 8px;
+  font-size: 12px;
   color: var(--accent);
+}
+.app-shell .capture button:disabled {
+  visibility: hidden;
+}
+.app-shell .capture kbd {
+  font: 12px Consolas, ui-monospace, monospace;
+  color: var(--faint);
+  background: none;
+  border: 0;
 }
 .app-shell .content {
   width: 100%;
-  max-width: 1160px;
-  margin: 0 auto;
-  padding: 28px 32px 40px;
+  max-width: 960px;
+  margin: 0;
+  padding: 32px 32px 40px;
 }
 .app-shell .page-heading {
-  margin-bottom: 28px;
+  margin-bottom: 32px;
 }
 .app-shell h1 {
-  font-size: 27px;
-  letter-spacing: -0.025em;
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 .app-shell h2 {
-  font-size: 16px;
-}
-.app-shell .page-heading p {
-  max-width: 68ch;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--muted);
-  margin-top: 8px;
-  font-size: 14px;
+}
+.app-shell h2 .number {
+  font: 12px Consolas, ui-monospace, monospace;
+  color: var(--accent);
+  letter-spacing: 0;
 }
 .app-shell .section-heading {
-  margin-bottom: 14px;
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.app-shell .ledger-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) auto auto;
+  gap: 16px;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 0;
+}
+.app-shell .ledger-row .grow {
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-shell .row-time {
+  font: 12px/16px Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+.app-shell .row-tag {
+  font: 12px/16px Consolas, ui-monospace, monospace;
+  text-transform: lowercase;
+  color: var(--muted);
+}
+.app-shell .row-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.app-shell .ledger-row:hover .row-actions,
+.app-shell .ledger-row:focus-within .row-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .app-shell .row-actions {
+    opacity: 1;
+  }
+}
+.app-shell .row-actions .text-button {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--accent);
+}
+@media (max-width: 560px) {
+  .app-shell .ledger-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+  }
+  .app-shell .row-time {
+    grid-row: 2;
+  }
+  .app-shell .row-tag {
+    display: none;
+  }
+  .app-shell .row-actions {
+    grid-row: 1 / 3;
+    grid-column: 2;
+  }
 }
 .app-shell label {
   font-size: 13px;

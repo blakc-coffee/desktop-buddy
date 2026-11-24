@@ -15,11 +15,8 @@ try {
       const page = await context.newPage();
       await installFixture(page, theme);
       await page.goto(process.env.BUDDY_AUDIT_URL || "http://127.0.0.1:1437/");
-      await page.waitForFunction(
-        () =>
-          document.querySelector(".runtime-label")?.textContent?.trim() ===
-          "DESKTOP",
-      );
+      await page.locator(".nav-item").first().waitFor();
+      await page.waitForFunction(() => !document.querySelector(".runtime-label"));
       await page
         .getByText("Your focus session finished", { exact: true })
         .waitFor();

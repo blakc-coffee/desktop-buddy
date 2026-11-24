@@ -66,6 +66,16 @@ const paths: Record<string, string> = {
   Download: "M12 3v12M7 10l5 5 5-5M4 17v4h16v-4",
   Refresh: "M20 7a8 8 0 1 0 1 8M20 2v6h-6",
 };
+/** Time-of-day for today, otherwise day + month; seconds are noise in a list. */
+function when(ms: number) {
+  const date = new Date(ms);
+  const today = date.toDateString() === new Date().toDateString();
+  return date.toLocaleString(undefined, {
+    ...(today ? {} : { day: "numeric", month: "short" }),
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   return (
     <svg
@@ -599,11 +609,9 @@ export default function App() {
           }}
         >
           <span className="brand-mark">
-            <Icon name="Cat" size={24} />
+            <Icon name="Cat" size={20} />
           </span>
-          <span>
-            Desktop Buddy<small>Your local desktop companion</small>
-          </span>
+          <span>Desktop Buddy</span>
         </a>
         <button
           className="navigation-toggle small-button"
@@ -639,7 +647,6 @@ export default function App() {
                   setPage(p);
                 }}
               >
-                <Icon name={p} />
                 <span>{pageInfo[p].title}</span>
                 {p === "Activity" && attention.length > 0 && (
                   <b aria-label={`${attention.length} alerts`}>
@@ -655,30 +662,21 @@ export default function App() {
             ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="local-indicator">
-            <span />
-            Local first<small>No AI calls for everyday tools</small>
-          </div>
           <button
             className={page === "Settings" ? "nav-item selected" : "nav-item"}
             aria-current={page === "Settings" ? "page" : undefined}
             onClick={() => setPage("Settings")}
           >
-            <Icon name="Settings" />
             Settings
           </button>
-          <div className="shortcut-hint">
-            <kbd>Ctrl</kbd>
-            <kbd>Alt</kbd>
-            <kbd>P</kbd>
-            <span>Open from anywhere</span>
-          </div>
+          <p className="shortcut-hint">
+            <kbd>Ctrl Alt P</kbd> opens Buddy
+          </p>
         </div>
       </aside>
       <main id="main-content" tabIndex={-1}>
         <header className="toolbar">
           <form onSubmit={(e) => void submitCapture(e)} className="capture">
-            <Icon name="Plus" />
             <input
               ref={captureRef}
               aria-label="Quick capture"
@@ -693,13 +691,11 @@ export default function App() {
               title="Add quick capture"
               aria-label="Add quick capture"
             >
-              <Icon name="Plus" />
+              Add
             </button>
             <kbd>Ctrl K</kbd>
           </form>
-          <span className="runtime-label">
-            {native ? "DESKTOP" : "PREVIEW"}
-          </span>
+          {!native && <span className="runtime-label">PREVIEW</span>}
         </header>
         {!native && (
           <div className="preview-banner">
@@ -709,10 +705,7 @@ export default function App() {
         )}
         <div className="content">
           <div className="page-heading">
-            <div>
-              <h1 tabIndex={-1}>{pageInfo[page].title}</h1>
-              <p>{pageInfo[page].description}</p>
-            </div>
+            <h1 tabIndex={-1}>{pageInfo[page].title}</h1>
           </div>
           {error && (
             <div className="message error" role="alert">
@@ -877,24 +870,24 @@ export default function App() {
                         Needs attention{" "}
                         <span className="number">{attention.length}</span>
                       </h2>
-                      <span className="muted">Only things you can act on</span>
                     </div>
                     {attention.length ? (
                       attention.map((i) => (
-                        <div className="row" key={i.id}>
-                          <span className="attention-dot" />
-                          <div className="grow">
-                            <strong>{i.title}</strong>
-                            <span>
-                              {i.source} ·{" "}
-                              {new Date(i.createdAt).toLocaleString()}
-                            </span>
-                          </div>
+                        <div className="row ledger-row" key={i.id}>
+                          <time
+                            className="row-time"
+                            dateTime={new Date(i.createdAt).toISOString()}
+                          >
+                            {when(i.createdAt)}
+                          </time>
+                          <strong className="grow">{i.title}</strong>
+                          <span className="row-tag">{i.source}</span>
+                          <span className="row-actions">
                           {i.id.startsWith("due-") &&
                             ([10, 60] as const).map((minutes) => (
                               <button
                                 key={minutes}
-                                className="small-button"
+                                className="text-button"
                                 title={`Snooze ${minutes === 10 ? "10 minutes" : "1 hour"}`}
                                 onClick={() =>
                                   void run("snooze_item", { id: i.id, minutes })
@@ -904,13 +897,14 @@ export default function App() {
                               </button>
                             ))}
                           <button
-                            className="small-button"
+                            className="text-button"
                             onClick={() =>
                               void run("toggle_item", { id: i.id })
                             }
                           >
                             Mark seen
                           </button>
+                          </span>
                         </div>
                       ))
                     ) : (
@@ -1146,7 +1140,7 @@ export default function App() {
                                 {i.dueAt > 0 && (
                                   <span>
                                     {i.done ? "Delivered to Needs me · " : ""}
-                                    {new Date(i.dueAt).toLocaleString()}
+                                    {when(i.dueAt)}
                                   </span>
                                 )}
                               </div>

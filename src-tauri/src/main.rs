@@ -964,14 +964,15 @@ fn main() {
             surfaces::start(app.handle().clone());
             let mut unavailable = Vec::new();
             for shortcut in ["Ctrl+Alt+P", "Ctrl+Alt+Space"] {
-                if let Err(e) = app.global_shortcut().register(shortcut) {
-                    unavailable.push(format!("{shortcut}: {e}"));
+                // The plugin's error is a Debug dump; the only actionable fact is which key is taken.
+                if app.global_shortcut().register(shortcut).is_err() {
+                    unavailable.push(shortcut);
                 }
             }
             if !unavailable.is_empty() {
                 *core.warning.lock().unwrap() = Some(format!(
-                    "Shortcut unavailable ({}). You can open Buddy from the tray.",
-                    unavailable.join(", ")
+                    "{} is already used by another app, so Buddy can't claim it. Open Buddy from the tray instead.",
+                    unavailable.join(" and ")
                 ));
             }
             let mut pixels = vec![0u8; 32 * 32 * 4];

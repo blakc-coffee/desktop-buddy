@@ -28,7 +28,9 @@ const OUTSIDE_CLICK: u32 = WM_APP + 32;
 const WIDTH: i32 = 500;
 const FILE_WIDTH: i32 = 680;
 const HEIGHT: i32 = 56;
-const ROW_HEIGHT: i32 = 48;
+const ROW_HEIGHT: i32 = 40;
+/// Key-hint strip under the result list.
+const FOOTER: i32 = 30;
 const VISIBLE_ROWS: usize = 5;
 #[derive(Clone)]
 enum Action {
@@ -94,7 +96,7 @@ impl Bar {
         let area = unsafe { work_area(self.pet) };
         let scale = unsafe { GetDpiForWindow(self.pet).max(96) as i32 };
         let available = (area.bottom - area.top) * 96 / scale;
-        limit.min(((available - HEIGHT - 24) / ROW_HEIGHT).max(1) as usize)
+        limit.min(((available - HEIGHT - FOOTER - 24) / ROW_HEIGHT).max(1) as usize)
     }
 }
 thread_local! {static BAR:RefCell<Option<Bar>>=const{RefCell::new(None)};}
@@ -878,7 +880,7 @@ unsafe fn layout(hwnd: HWND) {
     let has_note = GetWindowTextLengthW(status) > 0;
     let mut rect = RECT::default();
     let _ = GetClientRect(hwnd, &mut rect);
-    let height = HEIGHT + rows as i32 * ROW_HEIGHT + if rows > 0 { 8 } else { 0 };
+    let height = HEIGHT + rows as i32 * ROW_HEIGHT + if rows > 0 { FOOTER } else { 0 };
     let pet_dpi = GetDpiForWindow(pet).max(96) as i32;
     let width = if file_search { FILE_WIDTH } else { WIDTH };
     if rect.bottom != height * pet_dpi / 96 || rect.right != fitted_width(pet, width) {
@@ -894,37 +896,22 @@ unsafe fn layout(hwnd: HWND) {
         edit,
         None,
         start,
-        s(18),
+        s(15),
         (end - start - status_width).max(1),
-        s(22),
+        s(26),
         SWP_NOZORDER,
     );
     let _ = SetWindowPos(
         status,
         None,
         end - status_width + s(8),
-        s(18),
+        s(19),
         (status_width - s(8)).max(1),
-        s(22),
+        s(20),
         SWP_NOZORDER,
     );
     if get(|b| b.dpi) != Some(dpi) {
-        let font = CreateFontW(
-            -s(14),
-            0,
-            0,
-            0,
-            400,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY,
-            DEFAULT_PITCH.0 as u32,
-            w!("Segoe UI"),
-        );
+        let font = ui_font(dpi, 18, 400, w!("Segoe UI"));
         let old = change(|b| {
             let old = b.font;
             b.font = font;
@@ -1095,7 +1082,6 @@ unsafe fn paint(hwnd: HWND) {
             rect,
             dpi as u32,
             palette,
-            bar.font,
             &bar.choices,
             bar.selected,
             bar.visible_rows(),
@@ -1104,116 +1090,151 @@ unsafe fn paint(hwnd: HWND) {
     });
     let _ = EndPaint(hwnd, &paint);
 }
+/// Blends `a` toward `b` by `t`/255. GDI text has no alpha, so muted ink is precomputed per paint.
+fn mix(a: COLORREF, b: COLORREF, t: u32) -> COLORREF {
+    let channel = |shift: u32| {
+        let (x, y) = ((a.0 >> shift) & 255, (b.0 >> shift) & 255);
+        ((x * (255 - t) + y * t) / 255) << shift
+    };
+    COLORREF(channel(0) | channel(8) | channel(16))
+}
+unsafe fn ui_font(dpi: u32, size: i32, weight: i32, face: PCWSTR) -> HFONT {
+    CreateFontW(
+        -(size * dpi as i32 / 96),
+        0,
+        0,
+        0,
+        weight,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY,
+        DEFAULT_PITCH.0 as u32,
+        face,
+    )
+}
+unsafe fn text(dc: HDC, value: &str, mut bounds: RECT, color: COLORREF, flags: DRAW_TEXT_FORMAT) {
+    SetTextColor(dc, color);
+    let mut wide: Vec<_> = value.encode_utf16().collect();
+    // Full row height + DT_VCENTER: descenders (g, j, p, y) are never clipped.
+    DrawTextW(
+        dc,
+        &mut wide,
+        &mut bounds,
+        flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+    );
+}
+/// "Ledger" layout: type carries the hierarchy, a single accent rule marks the selection,
+/// locations sit right-aligned in monospace, and a key-hint strip closes the list.
 unsafe fn render_bar(
     dc: HDC,
     rect: RECT,
     dpi: u32,
     palette: crate::pet_art::Palette,
-    font: HFONT,
     rows: &[(String, Action)],
     selected: usize,
     visible_rows: usize,
     finder: bool,
 ) {
     let scale = |value: i32| value * dpi as i32 / 96;
+    let muted = mix(palette.ink, palette.surface, 105);
+    let faint = mix(palette.ink, palette.surface, 160);
     let surface = CreateSolidBrush(palette.surface);
     let outline = CreatePen(PS_SOLID, 1, palette.outline);
     let _ = FillRect(dc, &rect, surface);
     let old_brush = SelectObject(dc, surface.into());
     let old_pen = SelectObject(dc, outline.into());
-    let _ = RoundRect(dc, 0, 0, rect.right, rect.bottom, scale(22), scale(22));
-    if rect.bottom > scale(HEIGHT) {
-        SelectObject(dc, outline.into());
-        let _ = MoveToEx(dc, scale(12), scale(HEIGHT), None);
-        let _ = LineTo(dc, rect.right - scale(12), scale(HEIGHT));
-    }
+    let _ = RoundRect(dc, 0, 0, rect.right, rect.bottom, scale(10), scale(10));
     SelectObject(dc, old_brush);
     SelectObject(dc, old_pen);
-    {
-        let previous_font = SelectObject(dc, font.into());
-        SetBkMode(dc, TRANSPARENT);
-        if finder {
-            let first = selected / visible_rows * visible_rows;
-            for (index, (label, action)) in rows.iter().enumerate().skip(first).take(visible_rows) {
-                let top = HEIGHT + (index - first) as i32 * ROW_HEIGHT;
-                let mut bounds = RECT {
-                    left: scale(12),
-                    top: scale(top + 3),
-                    right: rect.right - scale(12),
-                    bottom: scale(top + ROW_HEIGHT - 2),
-                };
-                if index == selected {
-                    let highlight = CreateSolidBrush(palette.selection);
-                    let old = SelectObject(dc, highlight.into());
-                    let pen = SelectObject(dc, GetStockObject(NULL_PEN));
-                    let _ = RoundRect(
-                        dc,
-                        bounds.left,
-                        bounds.top,
-                        bounds.right,
-                        bounds.bottom,
-                        scale(9),
-                        scale(9),
-                    );
-                    SelectObject(dc, pen);
-                    SelectObject(dc, old);
-                    let _ = DeleteObject(highlight.into());
-                }
-                SetTextColor(
-                    dc,
-                    if index == selected {
-                        palette.accent
-                    } else {
-                        palette.ink
-                    },
-                );
-                bounds.left += scale(8);
-                bounds.right -= scale(8);
-                draw_result_icon(
-                    dc,
-                    bounds.left,
-                    (bounds.top + bounds.bottom - scale(22)) / 2,
-                    dpi as u32,
-                    action,
-                    palette.accent,
-                );
-                bounds.left += scale(40);
-                if let Some((name, detail)) = label.split_once("  ·  ") {
-                    let mut title_rect = RECT {
-                        bottom: bounds.top + scale(16),
-                        ..bounds
-                    };
-                    let mut title: Vec<_> = name.encode_utf16().collect();
-                    DrawTextW(
-                        dc,
-                        &mut title,
-                        &mut title_rect,
-                        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-                    );
-                    bounds.top += scale(15);
-                    SetTextColor(dc, palette.accent);
-                    let mut detail: Vec<_> = detail.encode_utf16().collect();
-                    DrawTextW(
-                        dc,
-                        &mut detail,
-                        &mut bounds,
-                        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-                    );
-                } else {
-                    let mut label: Vec<_> = label.encode_utf16().collect();
-                    DrawTextW(
-                        dc,
-                        &mut label,
-                        &mut bounds,
-                        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-                    );
-                }
-            }
-        }
-        SelectObject(dc, previous_font);
-    }
     let _ = DeleteObject(outline.into());
     let _ = DeleteObject(surface.into());
+    if !finder || rows.is_empty() || visible_rows == 0 {
+        return;
+    }
+    let rule = CreateSolidBrush(palette.outline);
+    let footer_top = rect.bottom - scale(FOOTER);
+    for y in [scale(HEIGHT), footer_top] {
+        let line = RECT { left: 1, top: y, right: rect.right - 1, bottom: y + 1 };
+        let _ = FillRect(dc, &line, rule);
+    }
+    let _ = DeleteObject(rule.into());
+    let regular = ui_font(dpi, 14, 400, w!("Segoe UI"));
+    let strong = ui_font(dpi, 14, 600, w!("Segoe UI"));
+    let mono = ui_font(dpi, 12, 400, w!("Consolas"));
+    let previous_font = SelectObject(dc, regular.into());
+    SetBkMode(dc, TRANSPARENT);
+    let first = selected / visible_rows * visible_rows;
+    let left = scale(54);
+    let right = rect.right - scale(16);
+    let path_width = (right - left) * 2 / 5;
+    let kind_width = scale(76);
+    for (index, (label, action)) in rows.iter().enumerate().skip(first).take(visible_rows) {
+        let top = scale(HEIGHT) + 1 + scale((index - first) as i32 * ROW_HEIGHT);
+        let row = RECT { left, top, right, bottom: top + scale(ROW_HEIGHT) };
+        let chosen = index == selected;
+        if chosen {
+            let mark = CreateSolidBrush(palette.accent);
+            let bar = RECT {
+                left: 1,
+                top: row.top + scale(9),
+                right: 1 + scale(3),
+                bottom: row.bottom - scale(9),
+            };
+            let _ = FillRect(dc, &bar, mark);
+            let _ = DeleteObject(mark.into());
+        }
+        draw_result_icon(
+            dc,
+            scale(18),
+            (row.top + row.bottom - scale(22)) / 2,
+            dpi,
+            action,
+            if chosen { palette.accent } else { muted },
+        );
+        let parts: Vec<&str> = label.split("  ·  ").collect();
+        let (name, kind, place) = match parts.as_slice() {
+            [name, kind, place, ..] => (*name, Some(*kind), Some(*place)),
+            [name, place] => (*name, None, Some(*place)),
+            _ => (label.as_str(), None, None),
+        };
+        let mut name_bounds = row;
+        if let Some(place) = place {
+            SelectObject(dc, mono.into());
+            let place_bounds = RECT { left: right - path_width, ..row };
+            text(dc, place, place_bounds, faint, DT_RIGHT | DT_PATH_ELLIPSIS);
+            name_bounds.right = place_bounds.left - scale(12);
+            if let Some(kind) = kind {
+                let kind_bounds = RECT {
+                    left: place_bounds.left - scale(12) - kind_width,
+                    right: place_bounds.left - scale(12),
+                    ..row
+                };
+                text(dc, &kind.to_lowercase(), kind_bounds, muted, DT_END_ELLIPSIS);
+                name_bounds.right = kind_bounds.left - scale(10);
+            }
+        }
+        SelectObject(dc, if chosen { strong } else { regular }.into());
+        text(dc, name, name_bounds, palette.ink, DT_END_ELLIPSIS);
+    }
+    SelectObject(dc, mono.into());
+    let footer = RECT { left: scale(18), top: footer_top, right, bottom: rect.bottom };
+    let completes = matches!(rows.get(selected), Some((_, Action::Complete(_))));
+    let hints = if completes {
+        "↑↓ move   enter run   tab complete   esc close"
+    } else {
+        "↑↓ move   enter open   esc close"
+    };
+    text(dc, hints, footer, faint, DT_LEFT);
+    let count = format!("{} / {}", (selected + 1).min(rows.len()), rows.len());
+    text(dc, &count, footer, muted, DT_RIGHT);
+    SelectObject(dc, previous_font);
+    for font in [regular, strong, mono] {
+        let _ = DeleteObject(font.into());
+    }
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1243,8 +1264,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 && change(|bar| {
                     let visible_rows = bar.visible_rows();
                     let first = bar.selected / visible_rows * visible_rows;
-                    let index = first + ((y - HEIGHT) / ROW_HEIGHT) as usize;
-                    if bar.finder && index < bar.choices.len() {
+                    let offset = ((y - HEIGHT) / ROW_HEIGHT) as usize;
+                    let index = first + offset;
+                    if bar.finder && offset < visible_rows && index < bar.choices.len() {
                         bar.selected = index;
                         true
                     } else {
@@ -1583,22 +1605,7 @@ mod tests {
             let mut x = 0;
             for dpi in [96, 144, 192] {
                 let s = |value: i32| value * dpi as i32 / 96;
-                let font = CreateFontW(
-                    -s(14),
-                    0,
-                    0,
-                    0,
-                    400,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET,
-                    OUT_DEFAULT_PRECIS,
-                    CLIP_DEFAULT_PRECIS,
-                    DEFAULT_QUALITY,
-                    DEFAULT_PITCH.0 as u32,
-                    w!("Segoe UI"),
-                );
+                let font = ui_font(dpi, 18, 400, w!("Segoe UI"));
                 for (row, pet) in [
                     crate::pet_art::Appearance::Calico,
                     crate::pet_art::Appearance::Dog,
@@ -1618,6 +1625,7 @@ mod tests {
                             "Algorithms  ·  Project  ·  C:\\Projects\\Algorithms".into(),
                             Action::Open("C:\\Projects\\Algorithms".into()),
                         ),
+                        ("Open tools".into(), Action::Tools),
                     ];
                     render_bar(
                         dc,
@@ -1625,11 +1633,10 @@ mod tests {
                             left: 0,
                             top: 0,
                             right: s(WIDTH),
-                            bottom: s(HEIGHT + ROW_HEIGHT * 2 + 8),
+                            bottom: s(HEIGHT + ROW_HEIGHT * 3 + FOOTER),
                         },
                         dpi,
                         palette,
-                        font,
                         &rows,
                         0,
                         5,
@@ -1638,9 +1645,9 @@ mod tests {
                     let previous_font = SelectObject(dc, font.into());
                     let mut input = RECT {
                         left: s(16),
-                        top: s(18),
+                        top: s(15),
                         right: s(WIDTH - 16),
-                        bottom: s(42),
+                        bottom: s(41),
                     };
                     let mut text: Vec<_> = "notes".encode_utf16().collect();
                     SetTextColor(dc, palette.ink);
