@@ -27,9 +27,6 @@ export function destinationPage(destination: PanelDestination) {
       return "Settings";
     case "shelf":
       return "Shelf";
-    case "timers":
-    case "reminders":
-      return "Tasks";
     case "settings":
       return "Settings";
     case "music":

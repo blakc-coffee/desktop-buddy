@@ -258,6 +258,10 @@ pub(crate) fn pin_focus(db: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
+fn todo_open(app: tauri::AppHandle) {
+    navigation::todo(app, pet::appearance().palette());
+}
+#[tauri::command]
 fn set_focus(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> Result<(), String> {
     pin_focus(&*core.db.lock().map_err(err)?, &id)?;
     changed(&app, &core);
@@ -1042,6 +1046,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             pin_recent,
+            todo_open,
             set_focus,
             start_focus,
             screen_helper::screen_capture,

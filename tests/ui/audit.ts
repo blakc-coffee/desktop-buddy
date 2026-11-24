@@ -23,7 +23,6 @@ try {
       await page.locator(".loading").waitFor({ state: "hidden" });
       for (const name of [
         "Overview",
-        "Tasks",
         "Projects",
         "Shelf",
         "Codex",

@@ -235,8 +235,7 @@ export default function App() {
   function setPage(nextPage: Page, taskTab?: string, focusHeader = true) {
     if (!pageEnabled(nextPage)) return;
     const current = formScope.current;
-    const key = (value: Page, tab: string) =>
-      value === "Tasks" ? value + ":" + tab : value;
+    const key = (value: Page, _tab: string) => value;
     drafts.current[key(current.page, current.tab)] = current.draft;
     const nextTab = taskTab || current.tab;
     const nextDraft = drafts.current[key(nextPage, nextTab)] || blankDraft();
@@ -255,9 +254,6 @@ export default function App() {
         document.querySelector<HTMLElement>("h1")?.focus(),
       );
     if (nextPage === "Fill") setFillVisited(true);
-  }
-  function setTab(nextTab: string) {
-    setPage("Tasks", nextTab, false);
   }
   async function saveTodo(command: string, args: Record<string, unknown>) {
     const blocking = command !== "rename_todo";
@@ -480,24 +476,19 @@ export default function App() {
           minutes: parsed.minutes,
           projectId: "",
         });
-      else if (parsed.type === "reminder") {
-        setEdit(null);
-        setTitle(parsed.title);
-        setDue(
-          new Date(parsed.dueAt - new Date().getTimezoneOffset() * 60000)
-            .toISOString()
-            .slice(0, 16),
-        );
-        setPage("Tasks", "Reminders");
-        setNotice(
-          `Review reminder: ${new Date(parsed.dueAt).toLocaleString()}. Save below to confirm.`,
-        );
-      } else
+      else if (parsed.type === "reminder")
+        await action("save_item", {
+          item: { ...emptyItem("reminder", parsed.title), dueAt: parsed.dueAt },
+        });
+      else
         await action("save_item", { item: emptyItem("todo", parsed.title) });
       setCapture("");
-      if (parsed.type !== "reminder")
-        setNotice(
-          parsed.type === "timer" ? "Timer started." : "Todo captured.",
+      setNotice(
+          parsed.type === "timer"
+            ? "Timer started."
+            : parsed.type === "reminder"
+              ? `Reminder set for ${new Date(parsed.dueAt).toLocaleString()}.`
+              : "Todo captured.",
         );
     } catch {
     } finally {
@@ -632,7 +623,6 @@ export default function App() {
           {(
             [
               "Activity",
-              "Tasks",
               "Projects",
               "Shelf",
               "Codex",
@@ -923,9 +913,7 @@ export default function App() {
                         <h2>In focus</h2>
                         <button
                           className="text-button"
-                          onClick={() => {
-                            setPage("Tasks", "Timers");
-                          }}
+                          onClick={() => void run("todo_open")}
                         >
                           View timers <Icon name="Arrow" size={14} />
                         </button>
@@ -942,7 +930,7 @@ export default function App() {
                       <h2>Next on your list</h2>
                       <button
                         className="text-button"
-                        onClick={() => setPage("Tasks", "Todos")}
+                        onClick={() => void run("todo_open")}
                       >
                         All todos <Icon name="Arrow" size={14} />
                       </button>
@@ -1006,206 +994,6 @@ export default function App() {
                       )}
                     </section>
                   )}
-                </>
-              )}
-              {page === "Tasks" && (
-                <>
-                  <div className="tabs" role="group" aria-label="Task type">
-                    {["Todos", "Timers", "Reminders"].map((t) => (
-                      <button
-                        aria-pressed={tab === t}
-                        key={t}
-                        className={tab === t ? "active" : ""}
-                        onClick={() => {
-                          setTab(t);
-                        }}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                  <form className="editor" onSubmit={(e) => void saveForm(e)}>
-                    <label className="grow">
-                      {tab === "Timers" ? "What are you focusing on?" : "Title"}
-                      <input
-                        required={tab !== "Timers"}
-                        value={title}
-                        maxLength={240}
-                        onChange={(e) => setTitle(e.target.value)}
-                        placeholder={
-                          tab === "Todos"
-                            ? "A small next step…"
-                            : tab === "Timers"
-                              ? "Focus session"
-                              : "Remember to…"
-                        }
-                      />
-                    </label>
-                    {tab === "Timers" && (
-                      <label className="duration">
-                        Minutes
-                        <input
-                          type="number"
-                          min="1"
-                          max="1440"
-                          required
-                          value={minutes}
-                          onChange={(e) => setMinutes(e.target.value)}
-                        />
-                      </label>
-                    )}
-                    {tab === "Reminders" && (
-                      <label>
-                        When <small>local time</small>
-                        <input
-                          type="datetime-local"
-                          required
-                          value={due}
-                          onChange={(e) => setDue(e.target.value)}
-                        />
-                      </label>
-                    )}
-                    <button className="primary" disabled={busy}>
-                      {tab === "Timers"
-                        ? "Start timer"
-                        : edit
-                          ? "Save changes"
-                          : "Add " + (tab === "Todos" ? "todo" : "reminder")}
-                      <Icon name="Plus" size={16} />
-                    </button>
-                    {edit && (
-                      <button
-                        type="button"
-                        className="small-button"
-                        onClick={clearForm}
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </form>
-                  {tab === "Todos" ? (
-                    <TaskChecklist items={todos} busy={busy} save={saveTodo} />
-                  ) : tab === "Timers" ? (
-                    <>
-                      {timers.length ? (
-                        timers.map((i) => (
-                          <TimerRow key={i.id} item={i} action={run} />
-                        ))
-                      ) : (
-                        <Empty
-                          icon="Clock"
-                          title="Give one thing your attention."
-                        >
-                          Start a timer. It keeps running when the panel is
-                          closed in the native app.
-                        </Empty>
-                      )}
-                      <p className="explanation">
-                        Running timers include sleep. After quitting or
-                        restarting, recovery uses the saved clock deadline;
-                        manual clock changes can affect that fallback.
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      {items.filter(
-                        (i) =>
-                          i.kind === (tab === "Todos" ? "todo" : "reminder"),
-                      ).length ? (
-                        items
-                          .filter(
-                            (i) =>
-                              i.kind ===
-                              (tab === "Todos" ? "todo" : "reminder"),
-                          )
-                          .map((i) => (
-                            <div
-                              className={"row " + (i.done ? "completed" : "")}
-                              key={i.id}
-                            >
-                              {i.kind === "todo" ? (
-                                <input
-                                  className="checkbox"
-                                  type="checkbox"
-                                  checked={i.done}
-                                  aria-label={`Complete ${i.title}`}
-                                  onChange={() =>
-                                    void run("toggle_item", { id: i.id })
-                                  }
-                                />
-                              ) : (
-                                <div className="row-icon">
-                                  <Icon name="Clock" />
-                                </div>
-                              )}
-                              <div className="grow">
-                                <strong>{i.title}</strong>
-                                {i.dueAt > 0 && (
-                                  <span>
-                                    {i.done ? "Delivered to Needs me · " : ""}
-                                    {when(i.dueAt)}
-                                  </span>
-                                )}
-                              </div>
-                              {!i.done && (
-                                <button
-                                  className="text-button"
-                                  onClick={() => {
-                                    setEdit(i);
-                                    setTitle(i.title);
-                                    setDue(
-                                      i.dueAt
-                                        ? new Date(
-                                            i.dueAt -
-                                              new Date().getTimezoneOffset() *
-                                                60000,
-                                          )
-                                            .toISOString()
-                                            .slice(0, 16)
-                                        : "",
-                                    );
-                                  }}
-                                >
-                                  Edit
-                                </button>
-                              )}
-                              <button
-                                className="icon-button danger"
-                                title={`Remove ${i.title}`}
-                                onClick={() =>
-                                  void run("remove_item", { id: i.id })
-                                }
-                              >
-                                <Icon name="Trash" />
-                              </button>
-                            </div>
-                          ))
-                      ) : (
-                        <Empty
-                          icon={tab === "Todos" ? "Tasks" : "Clock"}
-                          title={
-                            tab === "Todos"
-                              ? "A clear list starts here."
-                              : "Remember it, then let it go."
-                          }
-                        >
-                          {tab === "Todos"
-                            ? "Add a todo, or use quick capture from any screen."
-                            : "Add a one-off reminder. Due items stay in Needs me until you mark them seen."}
-                        </Empty>
-                      )}
-                    </>
-                  )}
-                  <details className="help-disclosure">
-                    <summary>
-                      Timers and reminders while Buddy is closed
-                    </summary>{" "}
-                    <p className="explanation">
-                      Notifications require the tray app to be running. Quit
-                      stops reminders; overdue items recover next launch.
-                      Windows may suppress banners.
-                    </p>
-                  </details>
                 </>
               )}
               <div

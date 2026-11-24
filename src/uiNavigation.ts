@@ -1,6 +1,5 @@
 export type Page =
   | "Activity"
-  | "Tasks"
   | "Projects"
   | "Shelf"
   | "Codex"
@@ -9,7 +8,6 @@ export type Page =
   | "Settings";
 export const pageInfo: Record<Page, { title: string }> = {
   Activity: { title: "Overview" },
-  Tasks: { title: "Tasks" },
   Projects: { title: "Projects" },
   Shelf: { title: "Shelf" },
   Codex: { title: "Codex" },
