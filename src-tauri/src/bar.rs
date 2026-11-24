@@ -196,6 +196,11 @@ unsafe fn refresh() {
         return;
     }
     let command = commands::parse(&text);
+    if matches!(command, Ok(Parsed::Screen { .. })) {
+        if let Some(app) = get(|b| b.app.clone()) {
+            app.state::<Arc<crate::warm_ai::WarmState>>().prepare(&app);
+        }
+    }
     if let Some((_, hint, completion)) =
         commands::definitions()
             .into_iter()
@@ -323,7 +328,7 @@ unsafe fn refresh() {
                     .collect(),
             );
         }
-        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::Todo(_) | Parsed::Question(_) | Parsed::Screen { .. }) => {
+        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::ReminderAt { .. } | Parsed::Todo(_) | Parsed::Question(_) | Parsed::Screen { .. }) => {
             choices(vec![(String::new(), Action::Input(text))])
         }
         Err(_) => {
@@ -464,35 +469,12 @@ unsafe fn execute() {
                 Ok(()) => { hide(); return; }
                 Err(error) => Err(error),
             },
-            Ok(Parsed::Timer { minutes, title }) => start_timer(
-                app.clone(),
-                app.state::<Shared>(),
-                title,
-                minutes,
-                String::new(),
-            )
-            .map(|_| "Timer started.".to_string()),
-            Ok(Parsed::Todo(title)) => save_item(
-                app.clone(),
-                app.state::<Shared>(),
-                Item {
-                    kind: "todo".into(),
-                    title,
-                    ..Default::default()
-                },
-            )
-            .map(|_| "Todo saved.".to_string()),
-            Ok(Parsed::Reminder { minutes, title }) => save_item(
-                app.clone(),
-                app.state::<Shared>(),
-                Item {
-                    kind: "reminder".into(),
-                    title,
-                    due_at: now() + minutes as i64 * 60000,
-                    ..Default::default()
-                },
-            )
-            .map(|_| "Reminder saved.".to_string()),
+            Ok(
+                command @ (Parsed::Timer { .. }
+                | Parsed::Todo(_)
+                | Parsed::Reminder { .. }
+                | Parsed::ReminderAt { .. }),
+            ) => crate::apply_command(&app, command),
             _ => Err("Complete the command first.".into()),
         },
         Action::Tools => {
@@ -1534,7 +1516,8 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_mouse), module, 0).ok();
     change(|bar| bar.click_hook = hook);
     crate::pet::bar_visibility(app, IsWindowVisible(hwnd).as_bool());
-    app.state::<Arc<crate::warm_ai::WarmState>>().prepare(app);
+    // Chat is the default, so only Claude is warmed on open; Codex warms when a screen command is typed.
+    app.state::<Arc<crate::claude_chat::ClaudeState>>().prepare();
     crate::navigation::prepare(app);
 }
 

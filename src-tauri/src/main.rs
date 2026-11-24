@@ -15,6 +15,7 @@ mod screen_helper;
 mod warm_ai;
 mod screen_controls;
 mod chat_bubble;
+mod claude_chat;
 mod screen_region;
 mod menu_theme;
 mod pet;
@@ -843,6 +844,7 @@ fn main() {
         .manage(Arc::new(browser_fill::BrowserState::default()))
         .manage(Arc::new(screen_helper::ScreenState::default()))
         .manage(Arc::new(warm_ai::WarmState::default()))
+        .manage(Arc::new(claude_chat::ClaudeState::default()))
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|a| a == "--quit") {
                 request_quit(app)
@@ -1069,6 +1071,103 @@ fn main() {
         });
 }
 
+/// Creates what a reminder/timer/todo command describes and returns a one-line confirmation.
+/// Shared by the bar and the chat so both validate and save the same way.
+pub(crate) fn apply_command(
+    app: &tauri::AppHandle,
+    command: commands::Command,
+) -> Result<String, String> {
+    use commands::Command as C;
+    let core = || app.state::<Shared>();
+    let remind = |due_at: i64, title: String| {
+        save_item(
+            app.clone(),
+            core(),
+            Item {
+                kind: "reminder".into(),
+                title: title.clone(),
+                due_at,
+                ..Default::default()
+            },
+        )
+        .map(|_| {
+            let minute = (local_ms_of_day() + (due_at - now())).rem_euclid(DAY_MS) / 60_000;
+            format!("Reminder set for {} · {title}", clock_label(minute as u32))
+        })
+    };
+    match command {
+        C::Timer { minutes, title } => {
+            start_timer(app.clone(), core(), title.clone(), minutes, String::new())
+                .map(|_| format!("Timer started · {minutes} min · {title}"))
+        }
+        C::Todo(title) => save_item(
+            app.clone(),
+            core(),
+            Item {
+                kind: "todo".into(),
+                title: title.clone(),
+                ..Default::default()
+            },
+        )
+        .map(|_| format!("Todo saved · {title}")),
+        C::Reminder { minutes, title } => remind(now() + minutes as i64 * 60_000, title),
+        C::ReminderAt {
+            hour,
+            minute,
+            twelve_hour,
+            title,
+        } => remind(
+            now() + until_clock(local_ms_of_day(), hour, minute, twelve_hour),
+            title,
+        ),
+        _ => Err("Complete the command first.".into()),
+    }
+}
+const DAY_MS: i64 = 86_400_000;
+pub(crate) fn local_ms_of_day() -> i64 {
+    let mut t = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    ((t.wHour as i64 * 60 + t.wMinute as i64) * 60 + t.wSecond as i64) * 1000 + t.wMilliseconds as i64
+}
+/// Milliseconds from `now_ms` (local time of day) to the next hour:minute. A bare "5:30" may mean
+/// 05:30 or 17:30, so the sooner of the two wins. Never zero: "now" means tomorrow.
+fn until_clock(now_ms: i64, hour: u32, minute: u32, twelve_hour: bool) -> i64 {
+    let delta = |h: u32| {
+        let d = ((h * 60 + minute) as i64 * 60_000 - now_ms).rem_euclid(DAY_MS);
+        if d == 0 {
+            DAY_MS
+        } else {
+            d
+        }
+    };
+    if twelve_hour {
+        delta(hour % 12).min(delta(hour % 12 + 12))
+    } else {
+        delta(hour)
+    }
+}
+pub(crate) fn clock_label(minute_of_day: u32) -> String {
+    let (h, m) = (minute_of_day / 60 % 24, minute_of_day % 60);
+    let twelve = if h % 12 == 0 { 12 } else { h % 12 };
+    format!("{twelve}:{m:02} {}", if h < 12 { "am" } else { "pm" })
+}
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    #[test]
+    fn clock_reminders_pick_the_next_occurrence() {
+        let at = |h: i64, m: i64| (h * 60 + m) * 60_000;
+        assert_eq!(until_clock(at(14, 0), 17, 0, false), at(3, 0));
+        assert_eq!(until_clock(at(14, 0), 5, 30, true), at(3, 30));
+        assert_eq!(until_clock(at(4, 0), 5, 30, true), at(1, 30));
+        assert_eq!(until_clock(at(18, 0), 17, 0, false), at(23, 0));
+        assert_eq!(until_clock(at(17, 0), 17, 0, false), DAY_MS);
+        assert_eq!(until_clock(at(23, 0), 12, 0, true), at(1, 0));
+        assert_eq!(clock_label(17 * 60), "5:00 pm");
+        assert_eq!(clock_label(5), "12:05 am");
+        assert_eq!(clock_label(12 * 60 + 30), "12:30 pm");
+    }
+}
 #[cfg(test)]
 mod storage_tests {
     use super::*;
