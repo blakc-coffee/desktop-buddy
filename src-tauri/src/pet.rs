@@ -782,7 +782,6 @@ struct PetTimer {
     clock: TimerClock,
     /// Full length in seconds, so the fuse can show how much is left.
     total: u64,
-    title: String,
 }
 
 enum TimerClock {
@@ -850,7 +849,6 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                     if left > 0 {
                         indicators.timer = Some(PetTimer {
                             total: timer_total(&item),
-                            title: item.title,
                             id: item.id,
                             clock: TimerClock::Running(Instant::now() + Duration::from_millis(left as u64)),
                         });
@@ -859,7 +857,6 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                 "timer" if item.state == "paused" && paused.is_none() => {
                     paused = Some(PetTimer {
                         total: timer_total(&item),
-                        title: item.title,
                         id: item.id,
                         clock: TimerClock::Paused((item.remaining_ms.max(0) as u64).div_ceil(1000)),
                     });
@@ -938,7 +935,8 @@ unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: CO
 }
 /// Floor fuse: a surface plate under the pet whose top edge burns down as the timer runs.
 /// The plate is needed because the window is colour-keyed black, so bare text would fringe.
-unsafe fn draw_timer(dc: HDC, rect: RECT, left: u64, total: u64, running: bool, title: Option<&str>,
+/// The floor fuse: a burning line and the time left, centred. No task name, so it reads at a glance.
+unsafe fn draw_timer(dc: HDC, rect: RECT, left: u64, total: u64, running: bool,
     palette: pet_art::Palette, quiet: bool) {
     let mix = crate::bar::mix;
     let fill_rect = |area: RECT, color: COLORREF| {
@@ -972,25 +970,11 @@ unsafe fn draw_timer(dc: HDC, rect: RECT, left: u64, total: u64, running: bool, 
     SelectObject(dc, old_brush);
     let _ = DeleteObject(plate.into());
     SetBkMode(dc, TRANSPARENT);
-    let mut row = RECT { left: rect.left + 7, top: rect.top + 5, right: rect.right - 6, bottom: rect.bottom };
+    let mut row = RECT { left: rect.left + 6, top: rect.top + 5, right: rect.right - 6, bottom: rect.bottom };
     let mut time = wide(&countdown_label(left));
     let len = time.len() - 1;
-    let mut measured = row;
-    DrawTextW(dc, &mut time[..len], &mut measured, DT_SINGLELINE | DT_CALCRECT);
-    SetTextColor(dc, if running { palette.accent } else { palette.ink });
-    DrawTextW(dc, &mut time[..len], &mut row, DT_SINGLELINE | DT_VCENTER);
-    let Some(title) = title else { return };
-    let label = if running { title } else { "paused" };
-    let font = CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"));
-    let previous = SelectObject(dc, font.into());
-    SetTextColor(dc, mix(palette.surface, palette.ink, 170));
-    row.left = measured.right + 6;
-    let mut text = wide(label);
-    let len = text.len() - 1;
-    DrawTextW(dc, &mut text[..len], &mut row, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    SelectObject(dc, previous);
-    let _ = DeleteObject(font.into());
+    SetTextColor(dc, if running { palette.accent } else { mix(palette.surface, palette.ink, 170) });
+    DrawTextW(dc, &mut time[..len], &mut row, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
 }
 fn change_pet_timer(app: tauri::AppHandle, (id, action): (String, &'static str)) {
     if let Some(core) = app.try_state::<Shared>() {
@@ -1038,7 +1022,7 @@ unsafe fn paint(hwnd: HWND) {
         });
         let bar_open = state.control.status.lock().is_ok_and(|status| status.command_bar_visible);
         let timer = state.indicators.visible_timer().and_then(|timer| timer.display().map(|(left, running)|
-            (left, running, timer.total, timer.title.clone(), state.control.quiet.load(Ordering::SeqCst))));
+            (left, running, timer.total, state.control.quiet.load(Ordering::SeqCst))));
         let awake = file_motion.is_some() || bar_open || timer.as_ref().is_some_and(|timer| timer.1)
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
         // The todo token is permanent fast access, so it is drawn even when the list is empty.
@@ -1085,8 +1069,8 @@ unsafe fn paint(hwnd: HWND) {
         badge(dc, RECT { left: 9, top: 111, right: if compact { 48 } else { 119 }, bottom: 132 },
             &label, palette.surface, palette.ink);
     }
-    if let Some((left, running, total, title, quiet)) = timer {
-        draw_timer(dc, timer_bounds(count > 0), left, total, running, (count == 0).then_some(title.as_str()), palette, quiet);
+    if let Some((left, running, total, quiet)) = timer {
+        draw_timer(dc, timer_bounds(count > 0), left, total, running, palette, quiet);
     }
     if let Some(previous_font) = previous_font {
         SelectObject(dc, previous_font);
@@ -1904,9 +1888,9 @@ mod tests {
                         CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"));
                     let previous = SelectObject(dc, font.into());
                     match row {
-                        0 => draw_timer(dc, timer_bounds(false), 930, 1500, true, Some("Algorithms practice"), appearance.palette(), false),
-                        1 => draw_timer(dc, timer_bounds(true), 312, 600, false, None, appearance.palette(), false),
-                        _ => draw_timer(dc, timer_bounds(false), 312, 600, false, Some("Stretch"), appearance.palette(), true),
+                        0 => draw_timer(dc, timer_bounds(false), 930, 1500, true, appearance.palette(), false),
+                        1 => draw_timer(dc, timer_bounds(true), 312, 600, false, appearance.palette(), false),
+                        _ => draw_timer(dc, timer_bounds(false), 312, 600, false, appearance.palette(), true),
                     }
                     SelectObject(dc, previous);
                     let _ = DeleteObject(font.into());
