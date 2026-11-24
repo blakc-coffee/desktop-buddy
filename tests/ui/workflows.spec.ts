@@ -673,3 +673,29 @@ test("shelf shows recent above pinned with Pin", async ({ page }) => {
     ),
   ).toBe(true);
 });
+
+test("todo pop-up holds focus, tags and unlinked clocks", async ({ page }) => {
+  await page.setViewportSize({ width: 300, height: 520 });
+  await installFixture(page);
+  await page.goto("/?surface=todo");
+  const focus = page.locator(".todo-focus");
+  await expect(focus).toContainText("Today's focus");
+  await expect(focus.getByRole("textbox", { name: "Edit Review the browser-helper setup" })).toBeVisible();
+  await expect(focus.locator(".todo-tag")).toContainText("15:30");
+  const clocks = page.locator(".todo-clock-row");
+  await expect(clocks.filter({ hasText: "Stretch" })).toHaveCount(1);
+  await expect(clocks.filter({ hasText: "Algorithms practice" })).toHaveCount(1);
+  await expect(clocks.filter({ hasText: "Review the browser-helper setup" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Start 25 min focus for Write the complexity analysis" }).click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).fixtureCalls.some(
+        (call: any) => call.command === "start_focus" && call.args.id === "t2",
+      ),
+    ),
+  ).toBe(true);
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+});

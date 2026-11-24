@@ -51,6 +51,16 @@ export async function installFixture(
           item("r1", "reminder", "Review the release notes", {
             dueAt: now + 3600000,
           }),
+          item("ft", "timer", "Review the browser-helper setup", {
+            state: "paused",
+            durationMs: 1500000,
+            remainingMs: 930000,
+            parentId: "t1",
+          }),
+          item("r2", "reminder", "Stretch", {
+            dueAt: now + 1800000,
+            parentId: "gone",
+          }),
           item("due-focus", "attention", "Your focus session finished", {
             source: "Timer finished",
           }),
@@ -121,6 +131,7 @@ export async function installFixture(
             ).length,
             petAppearance: "calico",
             quietMode: !!root.fixtureQuiet,
+            focusId: empty ? "" : "t1",
           };
         if (command === "plugin:window|close") return null;
         if (command === "bubble_dismiss" || command === "ai_prepare") return null;

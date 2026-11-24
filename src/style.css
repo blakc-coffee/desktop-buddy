@@ -2360,3 +2360,13 @@ body:has(.held-preview) { min-width: 280px; }
 :root[data-pet="samoyed"],:root[data-pet="collie"] {--accent:#d3cad6;--accent-text:#36303c;}
 :root[data-pet="otter"] {--accent:#b99773;--accent-text:#33271c;}
 :root[data-pet="capybara"] {--accent:#bdaa7a;--accent-text:#322d1e;}
+
+.todo-check-row .todo-start { opacity: 0; }
+.todo-check-row:hover .todo-start,
+.todo-check-row:focus-within .todo-start { opacity: 1; }
+.todo-focus { position: relative; flex-wrap: wrap; box-shadow: inset 3px 0 0 var(--todo-accent, #f2b783); padding-left: 8px; }
+.todo-focus-label { flex-basis: 100%; font-size: 12px; line-height: 16px; letter-spacing: .04em; color: var(--todo-accent, #f2b783); }
+.todo-tag { flex: none; font: 12px/16px Consolas, monospace; font-variant-numeric: tabular-nums; padding: 2px 6px; border-radius: 6px; border: 1px solid currentColor; background: none; color: inherit; opacity: .85; }
+.todo-tag.is-running { color: var(--todo-accent, #f2b783); opacity: 1; }
+.todo-clock-row { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 4px; }
+.todo-clock-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -8,6 +8,28 @@ import {
 import { call, native } from "./bridge";
 import { emptyItem, type Item, type Snapshot } from "./domain";
 
+/** Time left on a timer: live for running ones, frozen for paused ones. */
+function timeLeft(item: Item, now: number) {
+  const ms = item.state === "running" ? Math.max(0, item.dueAt - now) : item.remainingMs;
+  const total = Math.ceil(ms / 1000);
+  const h = Math.floor(total / 3600),
+    m = Math.floor(total / 60) % 60,
+    s = total % 60;
+  const mm = String(m).padStart(2, "0"),
+    ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+function clockLabel(item: Item, now: number) {
+  return item.kind === "timer"
+    ? timeLeft(item, now)
+    : new Date(item.dueAt)
+        .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        .toLowerCase();
+}
+const isClock = (item: Item) =>
+  (item.kind === "timer" && (item.state === "running" || item.state === "paused")) ||
+  (item.kind === "reminder" && !item.done);
+
 export default function Todo() {
   const getPalette = () =>
     (window as unknown as { __BUDDY_PALETTE__?: Record<string, string> })
@@ -19,6 +41,15 @@ export default function Todo() {
     return () => window.removeEventListener("buddy-palette", update);
   }, []);
   const [items, setItems] = useState<Item[]>([]);
+  const [clocks, setClocks] = useState<Item[]>([]);
+  const [focusId, setFocusId] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const ticking = clocks.some((item) => item.kind === "timer" && item.state === "running");
+  useEffect(() => {
+    if (!ticking) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [ticking]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -31,6 +62,9 @@ export default function Todo() {
       const data = await call<Snapshot>("snapshot");
       if (id === seq.current) {
         setItems(data.items.filter((item) => item.kind === "todo"));
+        setClocks(data.items.filter(isClock));
+        setFocusId(data.focusId || "");
+        setNow(Date.now());
         setLoaded(true);
       }
     } catch (e) {
@@ -141,12 +175,25 @@ export default function Todo() {
         </p>
       )}
       {!loaded && !error && <p role="status">Loading your checklist…</p>}
-      {loaded && !items.length && (
+      {loaded && !items.length && !clocks.length && (
         <p className="todo-empty">Your checklist starts here.</p>
       )}
       <div className="todo-list" aria-label="Todo checklist">
+        {clocks
+          .filter((clock) => !items.some((todo) => todo.id === clock.parentId && !todo.done))
+          .map((clock) => (
+            <div className="todo-clock-row" key={clock.id}>
+              <span aria-hidden="true">{clock.kind === "timer" ? "⏳" : "🔔"}</span>
+              <span className="todo-clock-title">{clock.title}</span>
+              <ClockTag clock={clock} now={now} busy={busy} save={save} />
+            </div>
+          ))}
         {[...items]
-          .sort((a, b) => Number(a.done) - Number(b.done))
+          .sort(
+            (a, b) =>
+              Number(b.id === focusId) - Number(a.id === focusId) ||
+              Number(a.done) - Number(b.done),
+          )
           .map((item) => (
             <TodoRow
               key={item.id}
@@ -154,10 +201,45 @@ export default function Todo() {
               busy={busy}
               save={save}
               allowRemove
+              focus={item.id === focusId}
+              tags={clocks
+                .filter((clock) => clock.parentId === item.id)
+                .map((clock) => (
+                  <ClockTag key={clock.id} clock={clock} now={now} busy={busy} save={save} />
+                ))}
             />
           ))}
       </div>
     </main>
+  );
+}
+/** A timer's time left (click pauses or resumes) or a reminder's clock time. */
+function ClockTag({
+  clock,
+  now,
+  busy,
+  save,
+}: {
+  clock: Item;
+  now: number;
+  busy: boolean;
+  save: (command: string, args: Record<string, unknown>) => Promise<boolean>;
+}) {
+  const label = clockLabel(clock, now);
+  if (clock.kind !== "timer") return <span className="todo-tag">🔔 {label}</span>;
+  const running = clock.state === "running";
+  return (
+    <button
+      type="button"
+      className={"todo-tag" + (running ? " is-running" : "")}
+      disabled={busy}
+      aria-label={`${running ? "Pause" : "Resume"} timer ${clock.title}, ${label} left`}
+      onClick={() =>
+        void save("timer_action", { id: clock.id, action: running ? "pause" : "resume" })
+      }
+    >
+      ⏳ {label}
+    </button>
   );
 }
 export function TodoRow({
@@ -165,11 +247,15 @@ export function TodoRow({
   busy,
   save,
   allowRemove = false,
+  focus = false,
+  tags,
 }: {
   item: Item;
   busy: boolean;
   save: (command: string, args: Record<string, unknown>) => Promise<boolean>;
   allowRemove?: boolean;
+  focus?: boolean;
+  tags?: React.ReactNode[];
 }) {
   const [title, setTitle] = useState(item.title);
   const cancelled = useRef(false);
@@ -190,7 +276,12 @@ export function TodoRow({
       setTitle(item.title);
   }
   return (
-    <div className={"todo-check-row" + (item.done ? " is-done" : "")}>
+    <div
+      className={
+        "todo-check-row" + (item.done ? " is-done" : "") + (focus ? " todo-focus" : "")
+      }
+    >
+      {focus && <span className="todo-focus-label">Today's focus</span>}
       <label className="todo-check-target">
         <input
           type="checkbox"
@@ -217,6 +308,21 @@ export function TodoRow({
           }
         }}
       />
+      {tags}
+      {allowRemove && !item.done && (
+        <button
+          className="todo-start"
+          type="button"
+          title="Start 25 min focus"
+          disabled={busy}
+          aria-label={`Start 25 min focus for ${item.title}`}
+          onClick={() => void save("start_focus", { id: item.id })}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7 3h10M7 21h10M8 3c0 5 8 5 8 9s-8 4-8 9M16 3c0 5-8 5-8 9" />
+          </svg>
+        </button>
+      )}
       {allowRemove && (
         <button
           className="todo-remove"
