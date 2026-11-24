@@ -2,9 +2,11 @@
 
 Choose a pet using `/pet` (arrow keys or mouse wheel to browse) or **right-click → Choose pet**. The selection persists and themes the launcher, menus, and tool accents.
 
-The simple native lineup has 9 choices: Calico, Dachshund, Samoyed, Border collie, red panda, otter, capybara, Shiba Inu, and Panda. The existing Calico, Shiba, and Panda remain available.
+The simple native lineup has 7 choices: Calico, Dachshund, Samoyed, Border collie, otter, capybara and Shiba Inu. Siamese, Blue shorthair and Red panda were removed; Panda is no longer offered but stays as the internal colour and animation family for otter and capybara.
 
-Todo controls are borderless and retain the same checklist action: cats have fish, dogs have bones, red panda has an apple, otter has a clam, capybara has a leaf, and Panda has bamboo.
+Todo controls are borderless and retain the same checklist action: cats have fish, dogs have bones, otter has a clam and capybara has a leaf.
+
+The Border collie's eyes were recoloured (amber iris, dark pupil, one glint) because the original near-black eyes vanished against the dark coat at pet size.
 
 The nine approved preview PNGs are embedded unchanged in `assets/pet-reference/`. Their file hashes are recorded in `manifest.json`. The renderer omits only the connected dark presentation background, crops the retained artwork, and keeps its original aspect ratio, silhouette, face, colors, and coat details. It does not recreate the characters from circles and paths. The existing Shiba and Panda remain vector art.
 

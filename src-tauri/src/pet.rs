@@ -42,7 +42,7 @@ const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
 const NOTICE_TIMER: usize = 4;
-pub const APPEARANCES: [Appearance; 9] = [Appearance::Calico,Appearance::Dachshund,Appearance::Samoyed,Appearance::Collie,Appearance::RedPanda,Appearance::Otter,Appearance::Capybara,Appearance::Dog,Appearance::Panda];
+pub const APPEARANCES: [Appearance; 7] = [Appearance::Calico,Appearance::Dachshund,Appearance::Samoyed,Appearance::Collie,Appearance::Otter,Appearance::Capybara,Appearance::Dog];
 const WIDTH: i32 = 128;
 const HEIGHT: i32 = 136;
 #[derive(Clone, Default, Serialize)]
@@ -1361,7 +1361,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit"));
                 let action = crate::menu_theme::track(menu, hwnd, p.x, p.y, appearance().palette());
                 match action {
-                    20..=28 => {
+                    20..=26 => {
                         if let Some(app) = with_state(|s| s.app.clone()) {
                             set_appearance(&app, APPEARANCES[action as usize - 20]);
                         }

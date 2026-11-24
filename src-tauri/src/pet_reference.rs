@@ -31,18 +31,13 @@ fn reference_spec(pet: Appearance) -> Option<(usize, &'static [u8], [i32; 4])> {
             include_bytes!("../../assets/pet-reference/collie.png"),
             [588, 594, 701, 594],
         ),
-        RedPanda => (
-            4,
-            include_bytes!("../../assets/pet-reference/red-panda.png"),
-            [607, 580, 697, 580],
-        ),
         Otter => (
-            5,
+            4,
             include_bytes!("../../assets/pet-reference/otter.png"),
             [489, 642, 589, 642],
         ),
         Capybara => (
-            6,
+            5,
             include_bytes!("../../assets/pet-reference/capybara.png"),
             [492, 580, 625, 580],
         ),
@@ -154,8 +149,8 @@ impl ReferencePet {
 fn reference_pet(pet: Appearance) -> Option<&'static ReferencePet> {
     // Decode each chosen pet only once, retaining its cropped pixels (not the
     // 1254px presentation canvas). No disk/network access or per-frame decode.
-    static CACHE: [std::sync::OnceLock<ReferencePet>; 7] =
-        [const { std::sync::OnceLock::new() }; 7];
+    static CACHE: [std::sync::OnceLock<ReferencePet>; 6] =
+        [const { std::sync::OnceLock::new() }; 6];
     let (index, bytes, eyes) = reference_spec(pet)?;
     Some(CACHE[index].get_or_init(|| ReferencePet::decode(bytes, eyes)))
 }
@@ -232,7 +227,7 @@ mod reference_tests {
         }
         assert!(
             bytes < 8 * 1024 * 1024,
-            "all seven decoded crops stay below 8 MiB"
+            "all six decoded crops stay below 8 MiB"
         );
     }
 }

@@ -12,12 +12,6 @@ impl Appearance {
                         pose.eye_state = 3;
                     }
                 }
-                Self::RedPanda => {
-                    pose.tail_angle = pose.offset_x.saturating_mul(6);
-                    if cue == Cue::TodoDone {
-                        pose.eye_state = 3;
-                    }
-                }
                 Self::Otter => {
                     pose.rotation_deg /= 2;
                     pose.offset_y /= 2;
@@ -140,7 +134,6 @@ mod quiet_pet_tests {
             }
         }
         assert_eq!(Appearance::Otter.token(), "clam");
-        assert_eq!(Appearance::RedPanda.token(), "apple");
         assert_eq!(Appearance::Capybara.token(), "leaf");
     }
 }

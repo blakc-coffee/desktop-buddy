@@ -8,8 +8,8 @@
     "bytes": 1158919
   },
   "collie": {
-    "sha256": "297128b7c9eab930c17988d7cd2ab5dcf306ef7bb5039d853c22da5f8864f929",
-    "bytes": 1128195
+    "sha256": "173d8f6409cb8635ea08f3fd2028183a51a09ceb16d9fd09c303b6bf52bd8c16",
+    "bytes": 773516
   },
   "dachshund": {
     "sha256": "d3044e8298072ee4d4abfbd3a7ef5971b0ea6c9d00040ea3eb19e86ebb85e55c",
@@ -18,10 +18,6 @@
   "otter": {
     "sha256": "b967c1d17d34cb27434db02f5fb5c14691ccd39c0405165460543fd628ca8f2c",
     "bytes": 1145864
-  },
-  "red-panda": {
-    "sha256": "b8ae041bcbe9f7164901fa3fedddfebdac80a22e5939d9964c2319f05fb78a04",
-    "bytes": 1174828
   },
   "samoyed": {
     "sha256": "72108824bd367feca23acb508ab6d9527aa79bf85774a590acacfdb7deaf3f89",
