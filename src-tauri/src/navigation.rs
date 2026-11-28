@@ -39,6 +39,11 @@ pub fn acknowledge_navigation(state: tauri::State<Navigation>, id: u64) -> Resul
 pub fn open(app: tauri::AppHandle, destination: Destination) {
     if !crate::features::destination_enabled(destination) { return; }
     if destination == Destination::Codex { chats(app); return; }
+    // Timers and reminders live in the Todo list now.
+    if matches!(destination, Destination::Timers | Destination::Reminders) {
+        todo(app, crate::pet::appearance().palette());
+        return;
+    }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Ok(request) = handle.state::<Navigation>().queue(destination) {

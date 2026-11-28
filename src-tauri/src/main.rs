@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod agents;
+mod autostart;
 mod bar;
 mod commands;
 mod features;
@@ -14,6 +15,10 @@ mod screen_helper;
 mod warm_ai;
 mod screen_controls;
 mod chat_bubble;
+mod chat_agent;
+mod diag;
+mod fullscreen;
+mod claude_chat;
 mod screen_region;
 mod menu_theme;
 mod pet;
@@ -48,7 +53,10 @@ struct Core {
     warning: Mutex<Option<String>>,
     workers: Mutex<Vec<Arc<Mutex<std::process::Child>>>>,
     agents: Mutex<std::collections::HashMap<String, Arc<agents::Session>>>,
+    /// The most recently removed item and when it was removed, for a short undo window.
+    undo: Mutex<Option<(Item, i64)>>,
 }
+const UNDO_MS: i64 = 10_000;
 type Shared = Arc<Core>;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +69,8 @@ struct Snapshot {
     agent_attention: usize,
     pet_appearance: String,
     quiet_mode: bool,
+    focus_id: String,
+    hotkey: String,
 }
 
 fn rows(db: &Connection) -> Result<Vec<Item>, String> {
@@ -85,6 +95,89 @@ fn put(db: &Connection, item: &Item) -> Result<(), String> {
     db.execute("INSERT INTO items(id,kind,created,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,payload=excluded.payload",params![item.id,item.kind,item.created_at,payload]).map_err(err)?;
     Ok(())
 }
+/// Recently used files stay on the shelf this long after their last use.
+const RECENT_FOR_MS: i64 = 3_600_000;
+const RECENT_LIMIT: usize = 20;
+/// Records each path as used now: one `recent` row per path, refreshed on reuse. Pinned paths are skipped.
+fn upsert_recent(db: &Connection, paths: &[String], now_ms: i64) -> Result<(), String> {
+    let all = rows(db)?;
+    let mut seen = std::collections::HashSet::new();
+    for path in paths.iter().filter(|path| seen.insert(path.as_str())) {
+        if all.iter().any(|i| i.kind == "shelf" && i.path == *path) {
+            continue;
+        }
+        let mut item = all
+            .iter()
+            .find(|i| i.kind == "recent" && i.path == *path)
+            .cloned()
+            .unwrap_or_else(|| Item {
+                id: new_id(),
+                kind: "recent".into(),
+                title: clip_title(
+                    &Path::new(path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.clone()),
+                ),
+                path: path.clone(),
+                ..Default::default()
+            });
+        item.created_at = now_ms;
+        put(db, &item)?;
+    }
+    prune_recent(db, now_ms)
+}
+/// Drops recent files unused for an hour, then all but the newest 20. Runs on read and write; no timer.
+fn prune_recent(db: &Connection, now_ms: i64) -> Result<(), String> {
+    let mut recent: Vec<Item> = rows(db)?.into_iter().filter(|i| i.kind == "recent").collect();
+    recent.sort_by_key(|i| std::cmp::Reverse(i.created_at));
+    for (index, item) in recent.iter().enumerate() {
+        if index >= RECENT_LIMIT || item.created_at < now_ms - RECENT_FOR_MS {
+            db.execute("DELETE FROM items WHERE id=?1", [&item.id]).map_err(err)?;
+        }
+    }
+    Ok(())
+}
+/// Keeps a recent file on the shelf for good.
+fn pin(db: &Connection, id: &str) -> Result<(), String> {
+    let mut item = get(db, id)?;
+    if item.kind != "recent" {
+        return Err("Only recent files can be pinned.".into());
+    }
+    if !Path::new(&item.path).exists() {
+        return Err("A dropped path no longer exists.".into());
+    }
+    if rows(db)?.iter().filter(|i| i.kind == "shelf").count() >= 50 {
+        return Err("Shelf limit is 50 entries.".into());
+    }
+    item.kind = "shelf".into();
+    put(db, &item)
+}
+/// Notes files the user just used, off the calling thread so UI threads never wait on the database.
+pub(crate) fn note_recent(app: &tauri::AppHandle, paths: Vec<String>) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Some(core) = app.try_state::<Shared>() else {
+            return;
+        };
+        let saved = core
+            .db
+            .lock()
+            .ok()
+            .is_some_and(|db| upsert_recent(&db, &paths, now()).is_ok());
+        if saved {
+            changed(&app, &core);
+        }
+    });
+}
+#[tauri::command]
+fn pin_recent(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> Result<(), String> {
+    let db = core.db.lock().map_err(err)?;
+    pin(&db, &id)?;
+    drop(db);
+    changed(&app, &core);
+    Ok(())
+}
 fn get(db: &Connection, id: &str) -> Result<Item, String> {
     let raw: String = db
         .query_row("SELECT payload FROM items WHERE id=?1", [id], |r| r.get(0))
@@ -102,6 +195,7 @@ fn changed(app: &tauri::AppHandle, c: &Core) {
 #[tauri::command]
 fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
     let db = core.db.lock().map_err(err)?;
+    prune_recent(&db, now())?;
     let mut items = rows(&db)?;
     for i in &mut items {
         if i.kind == "timer" && i.state == "running" {
@@ -114,7 +208,6 @@ fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
         })
         .unwrap_or_else(|_| "dark".to_string());
     Ok(Snapshot {
-        items,
         theme,
         data_path: core.data_path.display().to_string(),
         warning: core.warning.lock().map_err(err)?.clone(),
@@ -122,7 +215,139 @@ fn snapshot(core: tauri::State<Shared>) -> Result<Snapshot, String> {
         quiet_mode: db.query_row("SELECT value FROM settings WHERE key='quiet_mode'",[],|row|row.get::<_,String>(0)).is_ok_and(|value|value=="true"),
         agent_attention: agents::attention_count(&db)?,
         pet_appearance: db.query_row("SELECT value FROM settings WHERE key='pet_appearance'", [], |row| row.get(0)).unwrap_or_else(|_| "calico".into()),
+        hotkey: saved_hotkey(&db),
+        focus_id: {
+            let setting: Option<String> = db.query_row("SELECT value FROM settings WHERE key='focus'", [], |row| row.get(0)).ok();
+            focus_for_today(setting.as_deref(), &today(), &items).map(|item| item.id).unwrap_or_default()
+        },
+        items,
     })
+}
+/// Today's date on the local clock, as YYYY-MM-DD. Focus pins expire when it changes.
+pub(crate) fn today() -> String {
+    let mut t = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)
+}
+/// The open todo pinned as focus, if the pin was made today. The setting is "{todo_id}|{date}".
+fn focus_for_today(setting: Option<&str>, today: &str, items: &[Item]) -> Option<Item> {
+    let (id, day) = setting?.split_once('|')?;
+    if day != today {
+        return None;
+    }
+    items.iter().find(|i| i.kind == "todo" && !i.done && i.id == id).cloned()
+}
+/// Saves the greeting's answer as a todo and pins it as today's focus. Returns the todo id.
+pub(crate) fn add_focus(app: &tauri::AppHandle, title: &str) -> Result<String, String> {
+    let core = app.state::<Shared>();
+    let db = core.db.lock().map_err(err)?;
+    let item = Item { id: new_id(), kind: "todo".into(), title: clip_title(title), created_at: now(), ..Default::default() };
+    validate(&item)?;
+    put(&db, &item)?;
+    pin_focus(&db, &item.id)?;
+    drop(db);
+    changed(app, &core);
+    Ok(item.id)
+}
+pub(crate) fn focus_pinned_today(app: &tauri::AppHandle) -> bool {
+    let Some(core) = app.try_state::<Shared>() else { return false };
+    let Ok(db) = core.db.lock() else { return false };
+    let setting: Option<String> = db.query_row("SELECT value FROM settings WHERE key='focus'", [], |row| row.get(0)).ok();
+    rows(&db).is_ok_and(|items| focus_for_today(setting.as_deref(), &today(), &items).is_some())
+}
+pub(crate) fn pin_focus(db: &Connection, id: &str) -> Result<(), String> {
+    let value = if id.is_empty() { String::new() } else { format!("{id}|{}", today()) };
+    db.execute("INSERT INTO settings(key,value) VALUES('focus',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])
+        .map_err(err)?;
+    Ok(())
+}
+/// The bar's hotkey is one of a few presets, so a typo can never leave Buddy unreachable.
+const HOTKEYS: [&str; 3] = ["Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+K"];
+fn valid_hotkey(keys: &str) -> bool {
+    HOTKEYS.contains(&keys)
+}
+fn saved_hotkey(db: &Connection) -> String {
+    db.query_row("SELECT value FROM settings WHERE key='hotkey'", [], |row| row.get::<_, String>(0))
+        .ok()
+        .filter(|keys| valid_hotkey(keys))
+        .unwrap_or_else(|| HOTKEYS[0].into())
+}
+#[tauri::command]
+fn set_hotkey(app: tauri::AppHandle, core: tauri::State<Shared>, keys: String) -> Result<(), String> {
+    if !valid_hotkey(&keys) {
+        return Err("Pick one of the listed shortcuts.".into());
+    }
+    let old = saved_hotkey(&*core.db.lock().map_err(err)?);
+    if old == keys {
+        return Ok(());
+    }
+    let _ = app.global_shortcut().unregister(old.as_str());
+    if app.global_shortcut().register(keys.as_str()).is_err() {
+        let _ = app.global_shortcut().register(old.as_str());
+        return Err(format!("{keys} is already used by another app."));
+    }
+    core.db
+        .lock()
+        .map_err(err)?
+        .execute("INSERT INTO settings(key,value) VALUES('hotkey',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&keys])
+        .map_err(err)?;
+    changed(&app, &core);
+    Ok(())
+}
+pub(crate) fn log_error(app: &tauri::AppHandle, message: &str) {
+    if let Some(core) = app.try_state::<Shared>() {
+        diag::log(&core.data_path.join("buddy.log"), message);
+    }
+}
+fn process_ram_mb() -> u64 {
+    use windows_sys::Win32::System::{ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS}, Threading::GetCurrentProcess};
+    let mut counters = PROCESS_MEMORY_COUNTERS { cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..unsafe { std::mem::zeroed() } };
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) } != 0;
+    if ok { counters.WorkingSetSize as u64 / (1024 * 1024) } else { 0 }
+}
+/// Version, platform, memory, a few on/off settings and the last log lines. No todo text or paths.
+#[tauri::command]
+fn diagnostics(app: tauri::AppHandle, core: tauri::State<Shared>) -> String {
+    let flags = [
+        ("quiet", pet::quiet(&app)),
+        ("start_with_windows", autostart::enabled()),
+        ("agent_connected", chat_agent::chosen(&app).is_some()),
+    ];
+    diag::report(
+        env!("CARGO_PKG_VERSION"),
+        &format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        process_ram_mb(),
+        &flags,
+        &diag::tail(&core.data_path.join("buddy.log"), 50),
+    )
+}
+#[tauri::command]
+fn todo_open(app: tauri::AppHandle) {
+    navigation::todo(app, pet::appearance().palette());
+}
+#[tauri::command]
+fn set_focus(app: tauri::AppHandle, core: tauri::State<Shared>, id: String) -> Result<(), String> {
+    pin_focus(&*core.db.lock().map_err(err)?, &id)?;
+    changed(&app, &core);
+    Ok(())
+}
+/// Starts a 25-minute timer linked to the todo, titled like it.
+#[tauri::command]
+fn start_focus(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    focus_timer(&app, id)
+}
+pub(crate) fn focus_timer(app: &tauri::AppHandle, id: String) -> Result<(), String> {
+    let core = app.state::<Shared>();
+    let db = core.db.lock().map_err(err)?;
+    let todo = get(&db, &id)?;
+    if todo.kind != "todo" {
+        return Err("Only a todo can start a focus timer.".into());
+    }
+    start_timer_in(&db, todo.title, 25, todo.project_id, Some(id), &core.run)?;
+    drop(db);
+    changed(app, &core);
+    pet::cue(app, pet_art::Cue::FocusStart);
+    Ok(())
 }
 #[tauri::command]
 fn save_item(
@@ -182,8 +407,76 @@ fn remove_item(
     db.execute("DELETE FROM items WHERE id=?1", [id])
         .map_err(err)?;
     drop(db);
+    *core.undo.lock().map_err(err)? = Some((i, now()));
     changed(&app, &core);
     Ok(())
+}
+#[tauri::command]
+fn undo_remove(app: tauri::AppHandle, core: tauri::State<Shared>) -> Result<(), String> {
+    let last = core.undo.lock().map_err(err)?.take();
+    let db = core.db.lock().map_err(err)?;
+    restore_removed(&db, last, now())?;
+    drop(db);
+    changed(&app, &core);
+    Ok(())
+}
+fn restore_removed(db: &Connection, last: Option<(Item, i64)>, at: i64) -> Result<(), String> {
+    let Some((item, _)) = last.filter(|(_, removed_at)| at - removed_at <= UNDO_MS) else {
+        return Err("Nothing to undo.".into());
+    };
+    if get(db, &item.id).is_ok() {
+        return Ok(());
+    }
+    validate(&item)?;
+    put(db, &item)
+}
+#[tauri::command]
+fn snooze_item(
+    app: tauri::AppHandle,
+    core: tauri::State<Shared>,
+    id: String,
+    minutes: u32,
+) -> Result<(), String> {
+    let mut db = core.db.lock().map_err(err)?;
+    snooze_alert(&mut db, &id, minutes, now())?;
+    drop(db);
+    changed(&app, &core);
+    pet::cue(&app, pet_art::Cue::ReminderSaved);
+    Ok(())
+}
+/// Reopens the reminder behind a due alert (or creates one for a finished timer) and drops the alert.
+fn snooze_alert(db: &mut Connection, alert_id: &str, minutes: u32, at: i64) -> Result<(), String> {
+    if !(1..=1440).contains(&minutes) {
+        return Err("Snooze between 1 minute and 24 hours.".into());
+    }
+    let alert = get(db, alert_id)?;
+    let Some(original_id) = alert_id
+        .strip_prefix("due-")
+        .filter(|_| alert.kind == "attention")
+    else {
+        return Err("Only due reminders and timers can be snoozed.".into());
+    };
+    let due_at = at + i64::from(minutes) * 60_000;
+    let tx = db.transaction().map_err(err)?;
+    let reminder = match get(&tx, original_id) {
+        Ok(mut original) if original.kind == "reminder" => {
+            original.done = false;
+            original.due_at = due_at;
+            original
+        }
+        _ => Item {
+            id: new_id(),
+            kind: "reminder".into(),
+            title: alert.title.clone(),
+            created_at: at,
+            due_at,
+            ..Default::default()
+        },
+    };
+    put(&tx, &reminder)?;
+    tx.execute("DELETE FROM items WHERE id=?1", [alert_id])
+        .map_err(err)?;
+    tx.commit().map_err(err)
 }
 #[tauri::command]
 fn toggle_item(
@@ -243,11 +536,25 @@ fn start_timer(
     minutes: u32,
     project_id: String,
 ) -> Result<(), String> {
+    let db = core.db.lock().map_err(err)?;
+    start_timer_in(&db, title, minutes, project_id, None, &core.run)?;
+    drop(db);
+    changed(&app, &core);
+    pet::cue(&app, pet_art::Cue::FocusStart);
+    Ok(())
+}
+fn start_timer_in(
+    db: &Connection,
+    title: String,
+    minutes: u32,
+    project_id: String,
+    parent_id: Option<String>,
+    run: &str,
+) -> Result<(), String> {
     if minutes == 0 || minutes > 1440 || title.len() > 240 {
         return Err("Timer duration must be 1–1440 minutes.".into());
     }
-    let db = core.db.lock().map_err(err)?;
-    let all = rows(&db)?;
+    let all = rows(db)?;
     if all.len() >= 1900 {
         return Err("Local item limit reached. Export and clear old entries first.".into());
     }
@@ -273,16 +580,13 @@ fn start_timer(
         remaining_ms: duration,
         due_at: now() + duration,
         started_tick: ticks(),
-        run: core.run.clone(),
+        run: run.into(),
         state: "running".into(),
         project_id,
+        parent_id: parent_id.unwrap_or_default(),
         ..Default::default()
     };
-    put(&db, &i)?;
-    drop(db);
-    changed(&app, &core);
-    pet::cue(&app, pet_art::Cue::FocusStart);
-    Ok(())
+    put(db, &i)
 }
 #[tauri::command]
 fn timer_action(
@@ -771,6 +1075,7 @@ fn main() {
         .manage(Arc::new(browser_fill::BrowserState::default()))
         .manage(Arc::new(screen_helper::ScreenState::default()))
         .manage(Arc::new(warm_ai::WarmState::default()))
+        .manage(Arc::new(claude_chat::ClaudeState::default()))
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|a| a == "--quit") {
                 request_quit(app)
@@ -804,6 +1109,12 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            pin_recent,
+            set_hotkey,
+            diagnostics,
+            todo_open,
+            set_focus,
+            start_focus,
             screen_helper::screen_capture,
             screen_helper::quick_answer,
             screen_helper::screen_result,
@@ -825,6 +1136,8 @@ fn main() {
             navigation::acknowledge_navigation,
             save_item,
             remove_item,
+            undo_remove,
+            snooze_item,
             toggle_item,
             rename_todo,
             start_timer,
@@ -883,19 +1196,24 @@ fn main() {
                 warning: Mutex::new(None),
                 workers: Mutex::new(vec![]),
                 agents: Mutex::new(std::collections::HashMap::new()),
+                undo: Mutex::new(None),
             });
+            autostart::refresh();
             app.manage(core.clone());
+            diag::install_panic_hook(core.data_path.join("buddy.log"));
             surfaces::start(app.handle().clone());
             let mut unavailable = Vec::new();
-            for shortcut in ["Ctrl+Alt+P", "Ctrl+Alt+Space"] {
-                if let Err(e) = app.global_shortcut().register(shortcut) {
-                    unavailable.push(format!("{shortcut}: {e}"));
+            let chosen = core.db.lock().map(|db| saved_hotkey(&db)).unwrap_or_else(|_| HOTKEYS[0].into());
+            for shortcut in ["Ctrl+Alt+P".to_string(), chosen] {
+                // The plugin's error is a Debug dump; the only actionable fact is which key is taken.
+                if app.global_shortcut().register(shortcut.as_str()).is_err() {
+                    unavailable.push(shortcut);
                 }
             }
             if !unavailable.is_empty() {
                 *core.warning.lock().unwrap() = Some(format!(
-                    "Shortcut unavailable ({}). You can open Buddy from the tray.",
-                    unavailable.join(", ")
+                    "{} is already used by another app, so Buddy can't claim it. Open Buddy from the tray instead.",
+                    unavailable.join(" and ")
                 ));
             }
             let mut pixels = vec![0u8; 32 * 32 * 4];
@@ -944,6 +1262,8 @@ fn main() {
             match pet::start(app.handle().clone(), !tray_only) {
                 Ok(control) => {
                     app.manage(control);
+                    pet::greet_later(app.handle().clone());
+                    fullscreen::install(app.handle().clone());
                 }
                 Err(e) => {
                     let open = MenuItem::with_id(app, "recovery-open", "Open Desktop Buddy", true, None::<&str>)?;
@@ -992,6 +1312,103 @@ fn main() {
         });
 }
 
+/// Creates what a reminder/timer/todo command describes and returns a one-line confirmation.
+/// Shared by the bar and the chat so both validate and save the same way.
+pub(crate) fn apply_command(
+    app: &tauri::AppHandle,
+    command: commands::Command,
+) -> Result<String, String> {
+    use commands::Command as C;
+    let core = || app.state::<Shared>();
+    let remind = |due_at: i64, title: String| {
+        save_item(
+            app.clone(),
+            core(),
+            Item {
+                kind: "reminder".into(),
+                title: title.clone(),
+                due_at,
+                ..Default::default()
+            },
+        )
+        .map(|_| {
+            let minute = (local_ms_of_day() + (due_at - now())).rem_euclid(DAY_MS) / 60_000;
+            format!("Reminder set for {} · {title}", clock_label(minute as u32))
+        })
+    };
+    match command {
+        C::Timer { minutes, title } => {
+            start_timer(app.clone(), core(), title.clone(), minutes, String::new())
+                .map(|_| format!("Timer started · {minutes} min · {title}"))
+        }
+        C::Todo(title) => save_item(
+            app.clone(),
+            core(),
+            Item {
+                kind: "todo".into(),
+                title: title.clone(),
+                ..Default::default()
+            },
+        )
+        .map(|_| format!("Todo saved · {title}")),
+        C::Reminder { minutes, title } => remind(now() + minutes as i64 * 60_000, title),
+        C::ReminderAt {
+            hour,
+            minute,
+            twelve_hour,
+            title,
+        } => remind(
+            now() + until_clock(local_ms_of_day(), hour, minute, twelve_hour),
+            title,
+        ),
+        _ => Err("Complete the command first.".into()),
+    }
+}
+const DAY_MS: i64 = 86_400_000;
+pub(crate) fn local_ms_of_day() -> i64 {
+    let mut t = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    ((t.wHour as i64 * 60 + t.wMinute as i64) * 60 + t.wSecond as i64) * 1000 + t.wMilliseconds as i64
+}
+/// Milliseconds from `now_ms` (local time of day) to the next hour:minute. A bare "5:30" may mean
+/// 05:30 or 17:30, so the sooner of the two wins. Never zero: "now" means tomorrow.
+fn until_clock(now_ms: i64, hour: u32, minute: u32, twelve_hour: bool) -> i64 {
+    let delta = |h: u32| {
+        let d = ((h * 60 + minute) as i64 * 60_000 - now_ms).rem_euclid(DAY_MS);
+        if d == 0 {
+            DAY_MS
+        } else {
+            d
+        }
+    };
+    if twelve_hour {
+        delta(hour % 12).min(delta(hour % 12 + 12))
+    } else {
+        delta(hour)
+    }
+}
+pub(crate) fn clock_label(minute_of_day: u32) -> String {
+    let (h, m) = (minute_of_day / 60 % 24, minute_of_day % 60);
+    let twelve = if h % 12 == 0 { 12 } else { h % 12 };
+    format!("{twelve}:{m:02} {}", if h < 12 { "am" } else { "pm" })
+}
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    #[test]
+    fn clock_reminders_pick_the_next_occurrence() {
+        let at = |h: i64, m: i64| (h * 60 + m) * 60_000;
+        assert_eq!(until_clock(at(14, 0), 17, 0, false), at(3, 0));
+        assert_eq!(until_clock(at(14, 0), 5, 30, true), at(3, 30));
+        assert_eq!(until_clock(at(4, 0), 5, 30, true), at(1, 30));
+        assert_eq!(until_clock(at(18, 0), 17, 0, false), at(23, 0));
+        assert_eq!(until_clock(at(17, 0), 17, 0, false), DAY_MS);
+        assert_eq!(until_clock(at(23, 0), 12, 0, true), at(1, 0));
+        assert_eq!(clock_label(17 * 60), "5:00 pm");
+        assert_eq!(clock_label(5), "12:05 am");
+        assert_eq!(clock_label(12 * 60 + 30), "12:30 pm");
+    }
+}
 #[cfg(test)]
 mod storage_tests {
     use super::*;
@@ -999,6 +1416,150 @@ mod storage_tests {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE items(id TEXT PRIMARY KEY,kind TEXT NOT NULL,created INTEGER NOT NULL,payload TEXT NOT NULL);").unwrap();
         db
+    }
+    fn alert_for(original: &Item, source: &str) -> Item {
+        Item {
+            id: format!("due-{}", original.id),
+            kind: "attention".into(),
+            title: original.title.clone(),
+            created_at: 5,
+            source: source.into(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn focus_matches_only_today_and_open_todos() {
+        let todo = Item { id: "t1".into(), kind: "todo".into(), title: "Essay".into(), ..Default::default() };
+        let items = vec![todo.clone()];
+        assert_eq!(focus_for_today(Some("t1|2026-11-24"), "2026-11-24", &items).map(|i| i.id), Some("t1".into()));
+        assert!(focus_for_today(Some("t1|2026-11-24"), "2026-11-25", &items).is_none());
+        assert!(focus_for_today(Some("gone|2026-11-24"), "2026-11-24", &items).is_none());
+        let done = vec![Item { done: true, ..todo }];
+        assert!(focus_for_today(Some("t1|2026-11-24"), "2026-11-24", &done).is_none());
+        assert!(focus_for_today(None, "2026-11-24", &items).is_none());
+    }
+    #[test]
+    fn start_focus_links_the_timer() {
+        let db = database();
+        start_timer_in(&db, "Essay".into(), 25, String::new(), Some("t1".into()), "run").unwrap();
+        let timer = rows(&db).unwrap().into_iter().find(|i| i.kind == "timer").unwrap();
+        assert_eq!(timer.parent_id, "t1");
+        assert_eq!(timer.duration_ms, 1_500_000);
+        assert_eq!(timer.state, "running");
+    }
+    #[test]
+    fn hotkey_presets_only() {
+        assert!(valid_hotkey("Ctrl+Alt+Space"));
+        assert!(valid_hotkey("Alt+Shift+K"));
+        assert!(!valid_hotkey("Win+L"));
+        assert!(!valid_hotkey(""));
+    }
+    #[test]
+    fn windows_have_accessible_names() {
+        assert!(pet::PET_TITLE.contains("Kitty"));
+        assert!(bar::BAR_TITLE.contains("Kitty"));
+    }
+    fn recents(db: &Connection) -> Vec<Item> {
+        rows(db).unwrap().into_iter().filter(|i| i.kind == "recent").collect()
+    }
+    #[test]
+    fn recent_upsert_refreshes_instead_of_duplicating() {
+        let db = database();
+        upsert_recent(&db, &["C:/a.txt".into()], 0).unwrap();
+        upsert_recent(&db, &["C:/a.txt".into()], 10).unwrap();
+        let rows = recents(&db);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].created_at, 10);
+        assert_eq!(rows[0].title, "a.txt");
+    }
+    #[test]
+    fn recent_expires_after_an_hour() {
+        let db = database();
+        upsert_recent(&db, &["C:/a.txt".into()], 0).unwrap();
+        prune_recent(&db, 3_600_000).unwrap();
+        assert_eq!(recents(&db).len(), 1);
+        prune_recent(&db, 3_600_001).unwrap();
+        assert!(recents(&db).is_empty());
+    }
+    #[test]
+    fn recent_caps_at_twenty() {
+        let db = database();
+        for t in 0..25 {
+            upsert_recent(&db, &[format!("C:/f{t}.txt")], t).unwrap();
+        }
+        let rows = recents(&db);
+        assert_eq!(rows.len(), 20);
+        assert!(rows.iter().all(|i| i.created_at >= 5));
+    }
+    #[test]
+    fn pinned_path_is_not_noted_recent() {
+        let db = database();
+        put(&db, &Item { id: "s".into(), kind: "shelf".into(), title: "a.txt".into(), path: "C:/a.txt".into(), ..Default::default() }).unwrap();
+        upsert_recent(&db, &["C:/a.txt".into()], 0).unwrap();
+        assert!(recents(&db).is_empty());
+    }
+    #[test]
+    fn pin_recent_moves_to_shelf() {
+        let db = database();
+        let file = std::env::temp_dir().join("buddy-recent-pin-test.txt");
+        std::fs::write(&file, "x").unwrap();
+        let path = file.display().to_string();
+        upsert_recent(&db, &[path.clone(), "C:/missing/gone.txt".into()], 0).unwrap();
+        let id = |p: &str| recents(&db).into_iter().find(|i| i.path == p).unwrap().id;
+        let missing = id("C:/missing/gone.txt");
+        pin(&db, &id(&path)).unwrap();
+        assert!(recents(&db).iter().all(|i| i.path != path));
+        assert!(rows(&db).unwrap().iter().any(|i| i.kind == "shelf" && i.path == path));
+        assert_eq!(pin(&db, &missing), Err("A dropped path no longer exists.".into()));
+        let _ = std::fs::remove_file(file);
+    }
+    #[test]
+    fn snoozing_a_reminder_alert_reopens_the_same_reminder_and_drops_the_alert() {
+        let mut db = database();
+        let reminder = Item { id: "r1".into(), kind: "reminder".into(), title: "Call home".into(), done: true, due_at: 1_000, created_at: 1, ..Default::default() };
+        put(&db, &reminder).unwrap();
+        put(&db, &alert_for(&reminder, "Reminder due")).unwrap();
+        snooze_alert(&mut db, "due-r1", 10, 50_000).unwrap();
+        let reopened = get(&db, "r1").unwrap();
+        assert!(!reopened.done);
+        assert_eq!(reopened.due_at, 50_000 + 600_000);
+        assert!(get(&db, "due-r1").is_err());
+        assert_eq!(rows(&db).unwrap().len(), 1);
+    }
+    #[test]
+    fn snoozing_a_timer_alert_creates_a_reminder_with_the_timer_title() {
+        let mut db = database();
+        let timer = Item { id: "t1".into(), kind: "timer".into(), title: "Deep work".into(), state: "finished".into(), created_at: 1, ..Default::default() };
+        put(&db, &timer).unwrap();
+        put(&db, &alert_for(&timer, "Timer finished")).unwrap();
+        snooze_alert(&mut db, "due-t1", 60, 0).unwrap();
+        let items = rows(&db).unwrap();
+        let reminder = items.iter().find(|i| i.kind == "reminder").unwrap();
+        assert_eq!((reminder.title.as_str(), reminder.due_at, reminder.done), ("Deep work", 3_600_000, false));
+        assert_eq!(get(&db, "t1").unwrap().state, "finished");
+        assert!(get(&db, "due-t1").is_err());
+    }
+    #[test]
+    fn snooze_rejects_bad_lengths_and_non_alerts_without_changing_data() {
+        let mut db = database();
+        let todo = Item { id: "due-x".into(), kind: "todo".into(), title: "Not an alert".into(), created_at: 1, ..Default::default() };
+        put(&db, &todo).unwrap();
+        assert!(snooze_alert(&mut db, "due-x", 10, 0).is_err());
+        assert!(snooze_alert(&mut db, "due-x", 0, 0).is_err());
+        assert!(snooze_alert(&mut db, "due-x", 1441, 0).is_err());
+        assert!(snooze_alert(&mut db, "missing", 10, 0).is_err());
+        assert_eq!(rows(&db).unwrap().len(), 1);
+    }
+    #[test]
+    fn undo_restores_a_removed_item_only_inside_the_window() {
+        let db = database();
+        let todo = Item { id: "a".into(), kind: "todo".into(), title: "Keep me".into(), created_at: 1, ..Default::default() };
+        assert!(restore_removed(&db, Some((todo.clone(), 0)), UNDO_MS + 1).is_err());
+        assert!(restore_removed(&db, None, 0).is_err());
+        restore_removed(&db, Some((todo.clone(), 0)), UNDO_MS).unwrap();
+        assert_eq!(get(&db, "a").unwrap().title, "Keep me");
+        restore_removed(&db, Some((todo, 0)), 1).unwrap();
+        assert_eq!(rows(&db).unwrap().len(), 1);
     }
     #[test]
     fn completing_a_stale_todo_keeps_its_latest_data_and_never_reopens_it() {

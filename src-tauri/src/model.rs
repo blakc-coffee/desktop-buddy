@@ -46,6 +46,8 @@ pub struct Item {
     pub remaining_ms: i64,
     pub started_tick: u64,
     pub run: String,
+    /// The todo a timer or reminder was started from; empty when it stands alone.
+    pub parent_id: String,
 }
 pub fn validate(i: &Item) -> Result<(), String> {
     if ![
@@ -54,6 +56,7 @@ pub fn validate(i: &Item) -> Result<(), String> {
         "timer",
         "project",
         "shelf",
+        "recent",
         "attention",
         "receipt",
     ]
@@ -68,6 +71,7 @@ pub fn validate(i: &Item) -> Result<(), String> {
         || i.source.len() > 1024
         || i.project_id.len() > 128
         || i.run.len() > 128
+        || i.parent_id.len() > 128
         || i.state.len() > 64
     {
         return Err("Item text is empty or exceeds its size limit.".into());

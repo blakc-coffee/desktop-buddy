@@ -6,6 +6,7 @@ export interface Item {
     | "timer"
     | "project"
     | "shelf"
+    | "recent"
     | "attention"
     | "receipt";
   title: string;
@@ -21,6 +22,7 @@ export interface Item {
   remainingMs: number;
   startedTick: number;
   run: string;
+  parentId?: string;
 }
 export interface Snapshot {
   items: Item[];
@@ -31,6 +33,8 @@ export interface Snapshot {
   agentAttention?: number;
   petAppearance?: string;
   quietMode?: boolean;
+  focusId?: string;
+  hotkey?: string;
   agentHistory?: unknown[];
 }
 export const emptyItem = (kind: Item["kind"], title: string): Item => ({
@@ -130,6 +134,7 @@ export function validateBackup(text: string): Item[] {
         "timer",
         "project",
         "shelf",
+        "recent",
         "attention",
         "receipt",
       ].includes(i.kind) ||

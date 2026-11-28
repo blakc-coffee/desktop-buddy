@@ -38,11 +38,15 @@ const EXPLAINING: u32 = WM_APP + 23;
 const THINKING: u32 = WM_APP + 24;
 const WATCH_BUBBLE: u32 = WM_APP + 25;
 const QUIET: u32 = WM_APP + 26;
+const GREET: u32 = WM_APP + 27;
+/// The name screen readers announce for the pet window.
+pub const PET_TITLE: &str = "Kitty, your desktop buddy. Drop files on me to hold them.";
+const FULLSCREEN: u32 = WM_APP + 28;
 const THINKING_TIMER: usize = 5;
 const MOTION_TIMER: usize = 2;
 const COUNTDOWN_TIMER: usize = 3;
 const NOTICE_TIMER: usize = 4;
-pub const APPEARANCES: [Appearance; 11] = [Appearance::Calico,Appearance::Siamese,Appearance::BlueCat,Appearance::Dachshund,Appearance::Samoyed,Appearance::Collie,Appearance::RedPanda,Appearance::Otter,Appearance::Capybara,Appearance::Dog,Appearance::Panda];
+pub const APPEARANCES: [Appearance; 7] = [Appearance::Calico,Appearance::Dachshund,Appearance::Samoyed,Appearance::Collie,Appearance::Otter,Appearance::Capybara,Appearance::Dog];
 const WIDTH: i32 = 128;
 const HEIGHT: i32 = 136;
 #[derive(Clone, Default, Serialize)]
@@ -83,6 +87,7 @@ struct State {
     control: Arc<Control>,
     files: Vec<PathBuf>,
     hold_generation: u64,
+    cleared: Option<ClearedHold>,
     press: Option<(POINT, RECT, bool)>,
     hover: bool,
     explaining: bool,
@@ -96,6 +101,18 @@ struct State {
     motion: Option<(AnimationPhase, usize, bool)>,
     motion_deadline: Option<Instant>,
     drop_notice: Option<Instant>,
+}
+/// What "Clear held references" removed, kept briefly so the clear can be undone.
+struct ClearedHold {
+    files: Vec<PathBuf>,
+    refs: Vec<(PathBuf, crate::held_refs::Reference)>,
+    at: Instant,
+}
+const UNDO_CLEAR: Duration = Duration::from_secs(30);
+impl ClearedHold {
+    fn fresh(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.at) <= UNDO_CLEAR
+    }
 }
 thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 fn wide(s: &str) -> Vec<u16> {
@@ -260,10 +277,12 @@ fn merge_files(existing:&[PathBuf],incoming:Vec<PathBuf>)->Result<Vec<PathBuf>,S
     Ok(result)
 }
 unsafe fn hold(hwnd: HWND, state: &mut State, files: Vec<PathBuf>) {
+    state.cleared = None;
     state.drop_notice = None;
     let _ = KillTimer(Some(hwnd), NOTICE_TIMER);
+    let added: Vec<String> = files.iter().map(|path| path.display().to_string()).collect();
     match merge_files(&state.files,files) {
-        Ok(files)=>state.files=files,
+        Ok(files)=>{state.files=files;crate::note_recent(&state.app,added);}
         Err(message)=>{if let Ok(mut status)=state.control.status.lock(){status.message=message;}state.drop_notice=Some(Instant::now()+Duration::from_secs(8));let _=SetTimer(Some(hwnd),NOTICE_TIMER,1000,None);return;}
     }
     state.hold_generation = state.hold_generation.wrapping_add(1);
@@ -284,14 +303,14 @@ fn post_main(app: &tauri::AppHandle, quit: bool) {
         }
     });
 }
-fn save(app: &tauri::AppHandle, key: &str, value: &str) {
+pub(crate) fn save(app: &tauri::AppHandle, key: &str, value: &str) {
     if let Some(core) = app.try_state::<Shared>() {
         if let Ok(db) = core.db.lock() {
             let _=db.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value]);
         }
     }
 }
-fn setting(app: &tauri::AppHandle, key: &str) -> Option<String> {
+pub(crate) fn setting(app: &tauri::AppHandle, key: &str) -> Option<String> {
     let core = app.try_state::<Shared>()?;
     let db = core.db.lock().ok()?;
     db.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
@@ -662,6 +681,7 @@ unsafe fn shell_data(files: Vec<PathBuf>) -> Result<IDataObject, String> {
 unsafe fn copy_held(hwnd: HWND) -> Result<(), String> {
     refresh_hold(hwnd);
     let (files, deadline) = with_state(|s| (s.files.clone(), s.hold_generation)).unwrap_or_default();
+    let used: Vec<String> = files.iter().map(|path| path.display().to_string()).collect();
     let result = (|| -> Result<(), String> {
         let data = shell_data(files)?;
         prefer_copy(&data)?;
@@ -672,6 +692,7 @@ unsafe fn copy_held(hwnd: HWND) -> Result<(), String> {
     with_state(|s| {
         if result.is_ok() {
             finish_handoff(hwnd, s, deadline);
+            crate::note_recent(&s.app, used);
         }
         if let Ok(mut status) = s.control.status.lock() {
             status.message=match &result{Ok(())=>"Copied file references. Paste in a folder or compatible app. Clipboard is now owned by your copy action.".into(),Err(e)=>e.clone()};
@@ -763,6 +784,8 @@ unsafe fn persist_position(hwnd: HWND) {
 struct PetTimer {
     id: String,
     clock: TimerClock,
+    /// Full length in seconds, so the fuse can show how much is left.
+    total: u64,
 }
 
 enum TimerClock {
@@ -803,10 +826,6 @@ enum ReminderMark {
 }
 
 impl Indicators {
-    fn shows_todo(&self) -> bool {
-        self.todo_count > 0 || self.reminder.is_some()
-    }
-
     fn visible_timer(&self) -> Option<&PetTimer> {
         self.timer.as_ref().filter(|timer| timer.display().is_some())
     }
@@ -833,6 +852,7 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                     let left = remaining(&item, now(), ticks(), &core.run);
                     if left > 0 {
                         indicators.timer = Some(PetTimer {
+                            total: timer_total(&item),
                             id: item.id,
                             clock: TimerClock::Running(Instant::now() + Duration::from_millis(left as u64)),
                         });
@@ -840,6 +860,7 @@ fn read_indicators(app: &tauri::AppHandle) -> Indicators {
                 }
                 "timer" if item.state == "paused" && paused.is_none() => {
                     paused = Some(PetTimer {
+                        total: timer_total(&item),
                         id: item.id,
                         clock: TimerClock::Paused((item.remaining_ms.max(0) as u64).div_ceil(1000)),
                     });
@@ -864,6 +885,10 @@ unsafe fn update_countdown_tick(hwnd: HWND, indicators: &Indicators) {
     if IsWindowVisible(hwnd).as_bool() && indicators.is_counting() {
         let _ = SetTimer(Some(hwnd), COUNTDOWN_TIMER, 1000, None);
     }
+}
+
+fn timer_total(item: &Item) -> u64 {
+    (item.duration_ms.max(0) as u64).div_ceil(1000).max(1)
 }
 
 fn countdown_label(seconds: u64) -> String {
@@ -912,6 +937,49 @@ unsafe fn badge(dc: HDC, mut rect: RECT, label: &str, surface: COLORREF, ink: CO
     let len = text.len() - 1;
     DrawTextW(dc, &mut text[..len], &mut rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 }
+/// Floor fuse: a surface plate under the pet whose top edge burns down as the timer runs.
+/// The plate is needed because the window is colour-keyed black, so bare text would fringe.
+/// The floor fuse: a burning line and the time left, centred. No task name, so it reads at a glance.
+unsafe fn draw_timer(dc: HDC, rect: RECT, left: u64, total: u64, running: bool,
+    palette: pet_art::Palette, quiet: bool) {
+    let mix = crate::bar::mix;
+    let fill_rect = |area: RECT, color: COLORREF| {
+        let brush = CreateSolidBrush(color);
+        FillRect(dc, &area, brush);
+        let _ = DeleteObject(brush.into());
+    };
+    let plate = CreateSolidBrush(palette.surface);
+    let old_brush = SelectObject(dc, plate.into());
+    let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let _ = RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+    let (start, end, y) = (rect.left + 6, rect.right - 6, rect.top + 3);
+    fill_rect(RECT { left: start, top: y, right: end, bottom: y + 2 }, mix(palette.surface, palette.ink, 64));
+    let burned = start + ((end - start) as u64 * left.min(total) / total.max(1)) as i32;
+    let fuse = if running { palette.accent } else { mix(palette.surface, palette.ink, 140) };
+    fill_rect(RECT { left: start, top: y, right: burned, bottom: y + 2 }, fuse);
+    if running && !quiet {
+        // The 1 s countdown repaint alternates the spark size, so the glow flickers for free.
+        let radius = if left % 2 == 0 { 3 } else { 2 };
+        let spark = CreateSolidBrush(palette.accent);
+        SelectObject(dc, spark.into());
+        let _ = Ellipse(dc, burned - radius, y + 1 - radius, burned + radius + 1, y + 2 + radius);
+        let core = CreateSolidBrush(mix(palette.accent, COLORREF(0x00FF_FFFF), 150));
+        SelectObject(dc, core.into());
+        let _ = Ellipse(dc, burned - 1, y, burned + 2, y + 3);
+        SelectObject(dc, plate.into());
+        let _ = DeleteObject(spark.into());
+        let _ = DeleteObject(core.into());
+    }
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(plate.into());
+    SetBkMode(dc, TRANSPARENT);
+    let mut row = RECT { left: rect.left + 6, top: rect.top + 5, right: rect.right - 6, bottom: rect.bottom };
+    let mut time = wide(&countdown_label(left));
+    let len = time.len() - 1;
+    SetTextColor(dc, if running { palette.accent } else { mix(palette.surface, palette.ink, 170) });
+    DrawTextW(dc, &mut time[..len], &mut row, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+}
 fn change_pet_timer(app: tauri::AppHandle, (id, action): (String, &'static str)) {
     if let Some(core) = app.try_state::<Shared>() {
         let _ = timer_action(app.clone(), core, id, action.into());
@@ -957,11 +1025,12 @@ unsafe fn paint(hwnd: HWND) {
             _ => None,
         });
         let bar_open = state.control.status.lock().is_ok_and(|status| status.command_bar_visible);
-        let timer = state.indicators.visible_timer().and_then(PetTimer::display);
-        let awake = file_motion.is_some() || bar_open || timer.is_some_and(|(_, running)| running)
+        let timer = state.indicators.visible_timer().and_then(|timer| timer.display().map(|(left, running)|
+            (left, running, timer.total, state.control.quiet.load(Ordering::SeqCst))));
+        let awake = file_motion.is_some() || bar_open || timer.as_ref().is_some_and(|timer| timer.1)
             || cue.is_some_and(|cue| !matches!(cue, Cue::Settle | Cue::FocusPause | Cue::FileExpired));
-        let paw = state.indicators.shows_todo().then_some((
-            matches!(state.indicators.reminder, Some(ReminderMark::Due)), state.indicators.todo_count));
+        // The todo token is permanent fast access, so it is drawn even when the list is empty.
+        let paw = (matches!(state.indicators.reminder, Some(ReminderMark::Due)), state.indicators.todo_count);
         let importing = state.control.importing.load(Ordering::SeqCst)
             && state.control.active_import.load(Ordering::SeqCst) == state.control.import_generation.load(Ordering::SeqCst);
         let notice = if importing { Some("Importing…") }
@@ -982,19 +1051,18 @@ unsafe fn paint(hwnd: HWND) {
     pet_art::draw_pose_accessory(dc, appearance, hover, dpi, pose, file_motion, awake || thinking.is_some(), cue, nerdy);
     let _ = RestoreDC(dc, mapped);
     let palette = appearance.palette();
-    let font = if count > 0 || timer.is_some() || paw.is_some() || notice.is_some() {
+    let font = if count > 0 || timer.is_some() || paw.1 > 0 || notice.is_some() {
         CreateFontW(-13, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"))
     } else {
         HFONT::default()
     };
     let previous_font = (!font.0.is_null()).then(|| SelectObject(dc, font.into()));
-    if let Some((due, pending)) = paw {
-        pet_art::draw_todo_icon(dc, appearance, due);
-        if pending > 0 {
-            let label = if pending > 9 { "9+".into() } else { pending.to_string() };
-            badge(dc, RECT { left: 29, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
-        }
+    let (due, pending) = paw;
+    pet_art::draw_todo_icon(dc, appearance, due);
+    if pending > 0 {
+        let label = if pending > 9 { "9+".into() } else { pending.to_string() };
+        badge(dc, RECT { left: 29, top: 3, right: 47, bottom: 20 }, &label, palette.surface, palette.ink);
     }
     if let Some(label) = notice {
         badge(dc, NOTICE_BOUNDS, label, palette.surface, palette.accent);
@@ -1005,11 +1073,8 @@ unsafe fn paint(hwnd: HWND) {
         badge(dc, RECT { left: 9, top: 111, right: if compact { 48 } else { 119 }, bottom: 132 },
             &label, palette.surface, palette.ink);
     }
-    if let Some((left, running)) = timer {
-        let time = countdown_label(left);
-        let label = if count > 0 { time } else if running { format!("Ⅱ  {time}") } else { format!("▶  {time}") };
-        let (surface, ink) = if running { (palette.accent, palette.surface) } else { (palette.surface, palette.accent) };
-        badge(dc, timer_bounds(count > 0), &label, surface, ink);
+    if let Some((left, running, total, quiet)) = timer {
+        draw_timer(dc, timer_bounds(count > 0), left, total, running, palette, quiet);
     }
     if let Some(previous_font) = previous_font {
         SelectObject(dc, previous_font);
@@ -1147,6 +1212,27 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         COMMANDS => {
             if let Some(app) = with_state(|s| s.app.clone()) {
                 crate::bar::toggle(&app, hwnd);
+            }
+            LRESULT(0)
+        }
+        FULLSCREEN => {
+            let user_visible = with_state(|s| s.control.status.lock().is_ok_and(|v| v.visible)).unwrap_or(false);
+            let show = visible_after(user_visible, wp.0 != 0);
+            let _ = ShowWindow(hwnd, if show { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            LRESULT(0)
+        }
+        GREET => {
+            if let Some(app) = with_state(|s| s.app.clone()) {
+                let today = crate::today();
+                let asked = setting(&app, "focus_asked").as_deref() == Some(today.as_str());
+                if IsWindowVisible(hwnd).as_bool()
+                    && crate::bar::should_greet(crate::focus_pinned_today(&app), asked, quiet(&app))
+                {
+                    let first_run = setting(&app, "first_run_done").is_none();
+                    save(&app, "focus_asked", &today);
+                    save(&app, "first_run_done", "1");
+                    crate::bar::greet(&app, hwnd, first_run);
+                }
             }
             LRESULT(0)
         }
@@ -1301,8 +1387,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         let r = timer_bounds(!s.files.is_empty());
                         let hit = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
                         let paw = TODO_BOUNDS;
-                        let hits_paw = s.indicators.shows_todo()
-                            && x >= paw.left && x < paw.right && y >= paw.top && y < paw.bottom;
+                        let hits_paw = x >= paw.left && x < paw.right && y >= paw.top && y < paw.bottom;
                         (s.app.clone(), s.indicators.visible_timer().filter(|_| hit).map(|timer| (timer.id.clone(), timer.action())), hits_paw)
                     }) {
                         if let Some(timer) = timer {
@@ -1329,22 +1414,19 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open tools"));
                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Hide pet"));
                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Clear held references"));
-                if let Ok(pets) = CreatePopupMenu() {
-                    for (index, pet) in APPEARANCES.into_iter().enumerate() {
-                        let label=wide(pet.label());
-                        let flags = MF_STRING | if pet == appearance() { MF_CHECKED } else { MF_UNCHECKED };
-                        let _ = AppendMenuW(pets, flags, 20 + index, PCWSTR(label.as_ptr()));
-                    }
-                    if AppendMenuW(menu, MF_POPUP, pets.0 as usize, w!("Choose pet")).is_err() {
-                        let _ = DestroyMenu(pets);
-                    }
+                if with_state(|s| s.cleared.as_ref().is_some_and(|c| c.fresh(Instant::now()))) == Some(true) {
+                    let _ = AppendMenuW(menu, MF_STRING, 7, w!("Undo clear"));
                 }
+                let startup = if crate::autostart::enabled() { MF_CHECKED } else { MF_UNCHECKED };
+                let _ = AppendMenuW(menu, MF_STRING | startup, 6, w!("Start with Windows"));
+                let _ = AppendMenuW(menu, MF_STRING, 20, w!("Change pet…"));
                 let _ = AppendMenuW(menu, MF_STRING, 5, w!("Quit"));
                 let action = crate::menu_theme::track(menu, hwnd, p.x, p.y, appearance().palette());
                 match action {
-                    20..=30 => {
+                    20 => {
+                        // The search bar's pet list shows a live preview of each pet.
                         if let Some(app) = with_state(|s| s.app.clone()) {
-                            set_appearance(&app, APPEARANCES[action as usize - 20]);
+                            crate::bar::open_with(&app, hwnd, "/pet");
                         }
                     }
                     1 => {
@@ -1356,6 +1438,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             if let Ok(mut queue)=s.control.import_queue.lock(){queue.clear();}
                             if let Ok(mut pending)=s.control.pending.lock(){pending.clear();}
                             crate::held_preview::clear(&s.app);
+                            s.cleared = (!s.files.is_empty()).then(|| ClearedHold {
+                                refs: crate::held_refs::snapshot(&s.files),
+                                files: s.files.clone(),
+                                at: Instant::now(),
+                            });
                             crate::held_refs::clear();
                             s.files.clear();
                             s.hold_generation = s.hold_generation.wrapping_add(1);
@@ -1367,6 +1454,25 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                     3 => {
                         let _ = PostMessageW(Some(hwnd), HIDE, WPARAM(0), LPARAM(0));
+                    }
+                    6 => {
+                        if let Err(message) = crate::autostart::set(!crate::autostart::enabled()) {
+                            with_state(|s| {
+                                if let Ok(mut status) = s.control.status.lock() {
+                                    status.message = message;
+                                }
+                                publish(s);
+                            });
+                        }
+                    }
+                    7 => {
+                        with_state(|s| {
+                            if let Some(cleared) = s.cleared.take().filter(|c| c.fresh(Instant::now())) {
+                                crate::held_refs::restore(cleared.refs);
+                                hold(hwnd, s, cleared.files);
+                            }
+                        });
+                        let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     5 => {
                         with_state(|s| post_main(&s.app, true));
@@ -1442,6 +1548,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
                     control: output.clone(),
                     files: vec![],
                     hold_generation: 0,
+                    cleared: None,
                     press: None,
                     hover: false,
                     explaining: false,
@@ -1459,7 +1566,7 @@ pub fn start(app: tauri::AppHandle, visible: bool) -> Result<Arc<Control>, Strin
             let hwnd = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 class,
-                w!("Desktop Buddy pet — drop files to hold"),
+                PCWSTR(wide(PET_TITLE).as_ptr()),
                 WS_POPUP,
                 0,
                 0,
@@ -1557,6 +1664,20 @@ fn message(app: &tauri::AppHandle, msg: u32) -> Result<(), String> {
         return Err("Pet window is unavailable.".into());
     }
     unsafe { PostMessageW(Some(HWND(hwnd as _)), msg, WPARAM(0), LPARAM(0)).map_err(err) }
+}
+/// A fullscreen app hides the pet without changing the user's own show/hide choice.
+fn visible_after(user_visible: bool, fullscreen: bool) -> bool {
+    user_visible && !fullscreen
+}
+pub fn set_fullscreen(app: &tauri::AppHandle, on: bool) {
+    post_pet_value(app, FULLSCREEN, on as usize);
+}
+/// Asks "What are we working on?" a few seconds after start, at most once a day.
+pub fn greet_later(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        let _ = message(&app, GREET);
+    });
 }
 pub fn refresh_indicators(app: &tauri::AppHandle) {
     let _ = message(app, REFRESH_INDICATORS);
@@ -1744,6 +1865,13 @@ mod tests {
         assert!(!remove_handed_off_file(&mut files,8,8,Path::new("b.pdf")));
     }
     #[test]
+    fn fullscreen_never_overrides_a_user_hide() {
+        assert!(visible_after(true, false));
+        assert!(!visible_after(true, true));
+        assert!(!visible_after(false, false));
+        assert!(!visible_after(false, true));
+    }
+    #[test]
     fn render_species_todo_badges_and_idle_held_poses_offscreen() {
         unsafe {
             let (width, height) = (880, 3610);
@@ -1802,6 +1930,16 @@ mod tests {
                     let _ = SetWindowExtEx(dc, 96, 96, None);
                     let _ = SetViewportExtEx(dc, 192, 192, None);
                     pet_art::draw_todo_icon(dc, appearance, held);
+                    let font = CreateFontW(-13, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH.0 as u32, w!("Trebuchet MS"));
+                    let previous = SelectObject(dc, font.into());
+                    match row {
+                        0 => draw_timer(dc, timer_bounds(false), 930, 1500, true, appearance.palette(), false),
+                        1 => draw_timer(dc, timer_bounds(true), 312, 600, false, appearance.palette(), false),
+                        _ => draw_timer(dc, timer_bounds(false), 312, 600, false, appearance.palette(), true),
+                    }
+                    SelectObject(dc, previous);
+                    let _ = DeleteObject(font.into());
                     let _ = RestoreDC(dc, saved);
                 }
             }

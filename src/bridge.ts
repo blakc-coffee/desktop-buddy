@@ -2,6 +2,8 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emptyItem, type Item, type Snapshot, validateBackup } from "./domain";
 export const native = isTauri();
 const key = "desktop-buddy-preview-v1";
+const UNDO_MS = 10_000;
+let lastRemoved: { item: Item; at: number } | null = null;
 const read = (): Snapshot => {
   const raw = localStorage.getItem(key);
   return {
@@ -52,8 +54,37 @@ export async function call<T = void>(
       if (item) item.done = !item.done;
       break;
     case "remove_item":
+      if (item) lastRemoved = { item, at: Date.now() };
       s.items = s.items.filter((i) => i.id !== id);
       break;
+    case "undo_remove": {
+      const last = lastRemoved;
+      lastRemoved = null;
+      if (!last || Date.now() - last.at > UNDO_MS)
+        throw new Error("Nothing to undo.");
+      if (!s.items.some((i) => i.id === last.item.id)) s.items.unshift(last.item);
+      break;
+    }
+    case "snooze_item": {
+      const minutes = Number(args.minutes);
+      if (!item || item.kind !== "attention" || !item.id.startsWith("due-"))
+        throw new Error("Only due reminders and timers can be snoozed.");
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440)
+        throw new Error("Snooze between 1 minute and 24 hours.");
+      const dueAt = Date.now() + minutes * 60000;
+      const original = s.items.find((i) => i.id === item.id.slice(4));
+      if (original?.kind === "reminder") {
+        original.done = false;
+        original.dueAt = dueAt;
+      } else
+        s.items.unshift({
+          ...emptyItem("reminder", item.title),
+          id: crypto.randomUUID(),
+          dueAt,
+        });
+      s.items = s.items.filter((i) => i.id !== item.id);
+      break;
+    }
     case "start_timer": {
       const duration = Number(args.minutes) * 60000;
       s.items.unshift({

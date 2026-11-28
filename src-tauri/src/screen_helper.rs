@@ -418,6 +418,29 @@ pub fn quick_answer(app: tauri::AppHandle, question: String) -> Result<(), Strin
         let _guard = guard;
         let generation=owned.generation.load(Ordering::SeqCst);
         let result = (|| -> Result<Value, String> {
+            let done = |text: String| json!({"title":"Quick answer","question":question,"busy":false,"explanation":text});
+            // Plain-language reminders and timers are applied locally, with no AI round trip.
+            if let Some(command) = crate::commands::natural(&question) {
+                return crate::apply_command(&app, command).map(done);
+            }
+            // Only the agent the user connected answers; there is no fallback to another agent.
+            use crate::chat_agent::{self as agents, Agent};
+            let agent = agents::route(agents::chosen(&app), Agent::installed).map_err(String::from)?;
+            if agent != Agent::Codex {
+                let answer = claude_answer(&app,agent,&owned,generation,&question);
+                agents::flag_sign_in(match &answer {
+                    Err(error) if agents::is_auth_error(&error.message) => Some(agent),
+                    _ => None,
+                });
+                return match answer {
+                    Ok(crate::claude_chat::Reply::Text(text)) => Ok(done(text)),
+                    Ok(crate::claude_chat::Reply::Action(action)) => crate::claude_chat::action_command(&action)
+                        .and_then(|command| crate::apply_command(&app, command))
+                        .map(done),
+                    Err(error) if agents::is_auth_error(&error.message) => Err(agents::sign_in_message(agent)),
+                    Err(error) => Err(error.message),
+                };
+            }
             match warm_answer(&app,&owned,generation,None,None,&question,"gpt-6-luna","none","Quick answer") {
                 Ok(text)=>return Ok(json!({"title":"Quick answer","question":question,"busy":false,"explanation":text})),
                 Err(error) if !error.submitted && !owned.cancel.load(Ordering::SeqCst)=>{},
@@ -878,7 +901,11 @@ pub async fn bubble_followup(app:tauri::AppHandle,state:tauri::State<'_,Arc<Scre
             show_bubble(&app);
         }
         Ok(())
-    } else {quick_answer(app,context)}
+    } else {
+        // A live Claude conversation already holds the earlier turns, so send only the new words.
+        let raw=app.state::<Arc<crate::claude_chat::ClaudeState>>().live()||crate::commands::natural(&question).is_some();
+        quick_answer(app,if raw {question} else {context})
+    }
 }
 
 fn followup_failure(previous:&Value,question:&str,error:&str)->Value {
@@ -895,11 +922,24 @@ fn screen_profile(requested:&str,fill:bool)->(Option<&str>,&'static str) {
 #[tauri::command]
 pub fn ai_prepare(app:tauri::AppHandle){app.state::<Arc<crate::warm_ai::WarmState>>().prepare(&app);}
 pub fn dismiss_presentation(app:&tauri::AppHandle){
+    app.state::<Arc<crate::claude_chat::ClaudeState>>().reset();
     let state=app.state::<Arc<ScreenState>>();
     if state.presented.load(Ordering::SeqCst)==state.generation.load(Ordering::SeqCst){state.suppressed.store(true,Ordering::SeqCst);state.cancel.store(true,Ordering::SeqCst);}
 }
 #[tauri::command]
 pub fn bubble_dismiss(app:tauri::AppHandle){dismiss_presentation(&app);if let Some(window)=app.get_webview_window("explanation"){let _=window.close();}}
+fn claude_answer(app:&tauri::AppHandle,agent:crate::chat_agent::Agent,state:&Arc<ScreenState>,generation:u64,question:&str)->Result<crate::claude_chat::Reply,crate::warm_ai::Failure>{
+    let check=state.clone();let stream=state.clone();let handle=app.clone();
+    app.state::<Arc<crate::claude_chat::ClaudeState>>().run(agent,crate::claude_chat::Turn{
+        prompt:crate::claude_chat::prompt(question),
+        cancelled:Box::new(move||check.cancel.load(Ordering::SeqCst)||check.suppressed.load(Ordering::SeqCst)||check.generation.load(Ordering::SeqCst)!=generation),
+        publish:Box::new(move|text,first|{
+            if stream.cancel.load(Ordering::SeqCst)||stream.suppressed.load(Ordering::SeqCst)||stream.generation.load(Ordering::SeqCst)!=generation{return;}
+            if let Ok(mut result)=stream.result.lock(){*result=json!({"title":"Quick answer","explanation":text,"busy":true,"streaming":true});}
+            let _=handle.emit("screen-result",());if first{show_bubble(&handle);}
+        }),
+    })
+}
 fn warm_answer(app:&tauri::AppHandle,state:&Arc<ScreenState>,generation:u64,image:Option<PathBuf>,bytes:Option<Vec<u8>>,question:&str,model:&str,effort:&str,title:&str)->Result<String,crate::warm_ai::Failure>{
     let check=state.clone();let stream=state.clone();let handle=app.clone();let heading=title.to_string();let prompt=if image.is_some(){format!("Answer this question using the image. Return only answer text, no JSON. Question/context: {}",serde_json::to_string(question).unwrap_or_default())}else{question.to_string()};
     app.state::<Arc<crate::warm_ai::WarmState>>().run(app.state::<Shared>().inner().clone(),crate::warm_ai::Request{

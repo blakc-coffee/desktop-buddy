@@ -16,43 +16,28 @@ fn reference_spec(pet: Appearance) -> Option<(usize, &'static [u8], [i32; 4])> {
             include_bytes!("../../assets/pet-reference/calico.png"),
             [590, 566, 720, 566],
         ),
-        Siamese => (
-            1,
-            include_bytes!("../../assets/pet-reference/siamese.png"),
-            [590, 586, 690, 586],
-        ),
-        BlueCat => (
-            2,
-            include_bytes!("../../assets/pet-reference/blue-cat.png"),
-            [586, 570, 688, 570],
-        ),
         Dachshund => (
-            3,
+            1,
             include_bytes!("../../assets/pet-reference/dachshund.png"),
             [494, 585, 599, 585],
         ),
         Samoyed => (
-            4,
+            2,
             include_bytes!("../../assets/pet-reference/samoyed.png"),
             [604, 590, 698, 590],
         ),
         Collie => (
-            5,
+            3,
             include_bytes!("../../assets/pet-reference/collie.png"),
             [588, 594, 701, 594],
         ),
-        RedPanda => (
-            6,
-            include_bytes!("../../assets/pet-reference/red-panda.png"),
-            [607, 580, 697, 580],
-        ),
         Otter => (
-            7,
+            4,
             include_bytes!("../../assets/pet-reference/otter.png"),
             [489, 642, 589, 642],
         ),
         Capybara => (
-            8,
+            5,
             include_bytes!("../../assets/pet-reference/capybara.png"),
             [492, 580, 625, 580],
         ),
@@ -164,8 +149,8 @@ impl ReferencePet {
 fn reference_pet(pet: Appearance) -> Option<&'static ReferencePet> {
     // Decode each chosen pet only once, retaining its cropped pixels (not the
     // 1254px presentation canvas). No disk/network access or per-frame decode.
-    static CACHE: [std::sync::OnceLock<ReferencePet>; 9] =
-        [const { std::sync::OnceLock::new() }; 9];
+    static CACHE: [std::sync::OnceLock<ReferencePet>; 6] =
+        [const { std::sync::OnceLock::new() }; 6];
     let (index, bytes, eyes) = reference_spec(pet)?;
     Some(CACHE[index].get_or_init(|| ReferencePet::decode(bytes, eyes)))
 }
@@ -242,7 +227,7 @@ mod reference_tests {
         }
         assert!(
             bytes < 8 * 1024 * 1024,
-            "all nine decoded crops stay below 8 MiB"
+            "all six decoded crops stay below 8 MiB"
         );
     }
 }

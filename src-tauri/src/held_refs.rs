@@ -24,6 +24,19 @@ pub fn clear() {
         items.clear();
     }
 }
+/// Copies the registry entries for these held paths so a clear can be undone.
+pub fn snapshot(paths: &[PathBuf]) -> Vec<(PathBuf, Reference)> {
+    let Ok(items) = registry().lock() else { return vec![] };
+    paths
+        .iter()
+        .filter_map(|path| items.get(path).map(|r| (path.clone(), r.clone())))
+        .collect()
+}
+pub fn restore(entries: Vec<(PathBuf, Reference)>) {
+    if let Ok(mut items) = registry().lock() {
+        items.extend(entries);
+    }
+}
 pub fn forget(path: &Path) {
     if let Ok(mut items) = registry().lock() {
         items.remove(path);

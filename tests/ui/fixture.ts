@@ -51,12 +51,25 @@ export async function installFixture(
           item("r1", "reminder", "Review the release notes", {
             dueAt: now + 3600000,
           }),
-          item("a1", "attention", "Your focus session finished", {
+          item("ft", "timer", "Review the browser-helper setup", {
+            state: "paused",
+            durationMs: 1500000,
+            remainingMs: 930000,
+            parentId: "t1",
+          }),
+          item("r2", "reminder", "Stretch", {
+            dueAt: now + 1800000,
+            parentId: "gone",
+          }),
+          item("due-focus", "attention", "Your focus session finished", {
             source: "Timer finished",
           }),
           item("s1", "shelf", "Implementation notes", {
             note: "Check drag formats and explain the supported browser editors.",
             projectId: "p1",
+          }),
+          item("rc1", "recent", "Lecture slides.pdf", {
+            path: "C:\\Projects\\University\\Lecture slides.pdf",
           }),
           item("s2", "shelf", "Problem statement.pdf", {
             path: "C:\\Projects\\University\\Semester 5\\Reference material\\Problem statement and assessment requirements.pdf",
@@ -118,6 +131,7 @@ export async function installFixture(
             ).length,
             petAppearance: "calico",
             quietMode: !!root.fixtureQuiet,
+            focusId: empty ? "" : "t1",
           };
         if (command === "plugin:window|close") return null;
         if (command === "bubble_dismiss" || command === "ai_prepare") return null;
@@ -224,8 +238,22 @@ export async function installFixture(
         } else if (command === "toggle_item") {
           const value = items.find((item) => item.id === args.id);
           if (value) value.done = !value.done;
-        } else if (command === "remove_item")
+        } else if (command === "remove_item") {
+          root.fixtureRemoved = items.find((item) => item.id === args.id);
           items = items.filter((item) => item.id !== args.id);
+        } else if (command === "undo_remove") {
+          if (root.fixtureRemoved) items.unshift(root.fixtureRemoved);
+          root.fixtureRemoved = undefined;
+        } else if (command === "snooze_item") {
+          const alert = items.find((item) => item.id === args.id);
+          items = items.filter((item) => item.id !== args.id);
+          if (alert)
+            items.unshift(
+              item(crypto.randomUUID(), "reminder", alert.title, {
+                dueAt: now + args.minutes * 60000,
+              }),
+            );
+        }
         else if (command === "start_timer")
           items.unshift(
             item(crypto.randomUUID(), "timer", args.title, {

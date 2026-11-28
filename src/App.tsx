@@ -66,6 +66,16 @@ const paths: Record<string, string> = {
   Download: "M12 3v12M7 10l5 5 5-5M4 17v4h16v-4",
   Refresh: "M20 7a8 8 0 1 0 1 8M20 2v6h-6",
 };
+/** Time-of-day for today, otherwise day + month; seconds are noise in a list. */
+function when(ms: number) {
+  const date = new Date(ms);
+  const today = date.toDateString() === new Date().toDateString();
+  return date.toLocaleString(undefined, {
+    ...(today ? {} : { day: "numeric", month: "short" }),
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   return (
     <svg
@@ -225,8 +235,7 @@ export default function App() {
   function setPage(nextPage: Page, taskTab?: string, focusHeader = true) {
     if (!pageEnabled(nextPage)) return;
     const current = formScope.current;
-    const key = (value: Page, tab: string) =>
-      value === "Tasks" ? value + ":" + tab : value;
+    const key = (value: Page, _tab: string) => value;
     drafts.current[key(current.page, current.tab)] = current.draft;
     const nextTab = taskTab || current.tab;
     const nextDraft = drafts.current[key(nextPage, nextTab)] || blankDraft();
@@ -245,9 +254,6 @@ export default function App() {
         document.querySelector<HTMLElement>("h1")?.focus(),
       );
     if (nextPage === "Fill") setFillVisited(true);
-  }
-  function setTab(nextTab: string) {
-    setPage("Tasks", nextTab, false);
   }
   async function saveTodo(command: string, args: Record<string, unknown>) {
     const blocking = command !== "rename_todo";
@@ -386,7 +392,7 @@ export default function App() {
   useEffect(() => {
     if (!data) return;
     document.documentElement.dataset.theme = data.theme;
-    document.documentElement.dataset.pet = ["calico", "dog", "panda", "siamese", "blue-cat", "dachshund", "samoyed", "collie", "red-panda", "otter", "capybara"].includes(
+    document.documentElement.dataset.pet = ["calico", "dog", "dachshund", "samoyed", "collie", "otter", "capybara"].includes(
       data.petAppearance || "",
     )
       ? data.petAppearance
@@ -443,8 +449,18 @@ export default function App() {
       throw e;
     }
   }
+  const [undoable, setUndoable] = useState(false),
+    undoTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(undoTimer.current), []);
   const run = (command: string, args: Record<string, unknown> = {}) =>
-    action(command, args).catch(() => {});
+    action(command, args)
+      .then(() => {
+        window.clearTimeout(undoTimer.current);
+        setUndoable(command === "remove_item");
+        if (command === "remove_item")
+          undoTimer.current = window.setTimeout(() => setUndoable(false), 10_000);
+      })
+      .catch(() => {});
   async function submitCapture(e: FormEvent) {
     e.preventDefault();
     const parsed = parseCapture(capture);
@@ -460,24 +476,19 @@ export default function App() {
           minutes: parsed.minutes,
           projectId: "",
         });
-      else if (parsed.type === "reminder") {
-        setEdit(null);
-        setTitle(parsed.title);
-        setDue(
-          new Date(parsed.dueAt - new Date().getTimezoneOffset() * 60000)
-            .toISOString()
-            .slice(0, 16),
-        );
-        setPage("Tasks", "Reminders");
-        setNotice(
-          `Review reminder: ${new Date(parsed.dueAt).toLocaleString()}. Save below to confirm.`,
-        );
-      } else
+      else if (parsed.type === "reminder")
+        await action("save_item", {
+          item: { ...emptyItem("reminder", parsed.title), dueAt: parsed.dueAt },
+        });
+      else
         await action("save_item", { item: emptyItem("todo", parsed.title) });
       setCapture("");
-      if (parsed.type !== "reminder")
-        setNotice(
-          parsed.type === "timer" ? "Timer started." : "Todo captured.",
+      setNotice(
+          parsed.type === "timer"
+            ? "Timer started."
+            : parsed.type === "reminder"
+              ? `Reminder set for ${new Date(parsed.dueAt).toLocaleString()}.`
+              : "Todo captured.",
         );
     } catch {
     } finally {
@@ -566,7 +577,10 @@ export default function App() {
     todos = items.filter((i) => i.kind === "todo"),
     projects = items.filter((i) => i.kind === "project"),
     timers = items.filter((i) => i.kind === "timer"),
-    shelf = items.filter((i) => i.kind === "shelf");
+    shelf = items.filter((i) => i.kind === "shelf"),
+    recent = items
+      .filter((i) => i.kind === "recent")
+      .sort((a, b) => b.createdAt - a.createdAt);
   const clearForm = () => {
     setTitle("");
     setDue("");
@@ -589,11 +603,9 @@ export default function App() {
           }}
         >
           <span className="brand-mark">
-            <Icon name="Cat" size={24} />
+            <Icon name="Cat" size={20} />
           </span>
-          <span>
-            Desktop Buddy<small>Your local desktop companion</small>
-          </span>
+          <span>Desktop Buddy</span>
         </a>
         <button
           className="navigation-toggle small-button"
@@ -611,7 +623,6 @@ export default function App() {
           {(
             [
               "Activity",
-              "Tasks",
               "Projects",
               "Shelf",
               "Codex",
@@ -629,7 +640,6 @@ export default function App() {
                   setPage(p);
                 }}
               >
-                <Icon name={p} />
                 <span>{pageInfo[p].title}</span>
                 {p === "Activity" && attention.length > 0 && (
                   <b aria-label={`${attention.length} alerts`}>
@@ -645,30 +655,21 @@ export default function App() {
             ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="local-indicator">
-            <span />
-            Local first<small>No AI calls for everyday tools</small>
-          </div>
           <button
             className={page === "Settings" ? "nav-item selected" : "nav-item"}
             aria-current={page === "Settings" ? "page" : undefined}
             onClick={() => setPage("Settings")}
           >
-            <Icon name="Settings" />
             Settings
           </button>
-          <div className="shortcut-hint">
-            <kbd>Ctrl</kbd>
-            <kbd>Alt</kbd>
-            <kbd>P</kbd>
-            <span>Open from anywhere</span>
-          </div>
+          <p className="shortcut-hint">
+            <kbd>Ctrl Alt P</kbd> opens Buddy
+          </p>
         </div>
       </aside>
       <main id="main-content" tabIndex={-1}>
         <header className="toolbar">
           <form onSubmit={(e) => void submitCapture(e)} className="capture">
-            <Icon name="Plus" />
             <input
               ref={captureRef}
               aria-label="Quick capture"
@@ -683,13 +684,11 @@ export default function App() {
               title="Add quick capture"
               aria-label="Add quick capture"
             >
-              <Icon name="Plus" />
+              Add
             </button>
             <kbd>Ctrl K</kbd>
           </form>
-          <span className="runtime-label">
-            {native ? "DESKTOP" : "PREVIEW"}
-          </span>
+          {!native && <span className="runtime-label">PREVIEW</span>}
         </header>
         {!native && (
           <div className="preview-banner">
@@ -699,10 +698,7 @@ export default function App() {
         )}
         <div className="content">
           <div className="page-heading">
-            <div>
-              <h1 tabIndex={-1}>{pageInfo[page].title}</h1>
-              <p>{pageInfo[page].description}</p>
-            </div>
+            <h1 tabIndex={-1}>{pageInfo[page].title}</h1>
           </div>
           {error && (
             <div className="message error" role="alert">
@@ -723,6 +719,14 @@ export default function App() {
           )}
           {data?.warning && (
             <div className="message warning">{data.warning}</div>
+          )}
+          {undoable && (
+            <div className="message notice" role="status">
+              <span>Removed.</span>
+              <button className="small-button" onClick={() => void run("undo_remove")}>
+                Undo
+              </button>
+            </div>
           )}
           {notice && (
             <div className="message notice" role="status">
@@ -859,27 +863,41 @@ export default function App() {
                         Needs attention{" "}
                         <span className="number">{attention.length}</span>
                       </h2>
-                      <span className="muted">Only things you can act on</span>
                     </div>
                     {attention.length ? (
                       attention.map((i) => (
-                        <div className="row" key={i.id}>
-                          <span className="attention-dot" />
-                          <div className="grow">
-                            <strong>{i.title}</strong>
-                            <span>
-                              {i.source} ·{" "}
-                              {new Date(i.createdAt).toLocaleString()}
-                            </span>
-                          </div>
+                        <div className="row ledger-row" key={i.id}>
+                          <time
+                            className="row-time"
+                            dateTime={new Date(i.createdAt).toISOString()}
+                          >
+                            {when(i.createdAt)}
+                          </time>
+                          <strong className="grow">{i.title}</strong>
+                          <span className="row-tag">{i.source}</span>
+                          <span className="row-actions">
+                          {i.id.startsWith("due-") &&
+                            ([10, 60] as const).map((minutes) => (
+                              <button
+                                key={minutes}
+                                className="text-button"
+                                title={`Snooze ${minutes === 10 ? "10 minutes" : "1 hour"}`}
+                                onClick={() =>
+                                  void run("snooze_item", { id: i.id, minutes })
+                                }
+                              >
+                                {minutes === 10 ? "+10m" : "+1h"}
+                              </button>
+                            ))}
                           <button
-                            className="small-button"
+                            className="text-button"
                             onClick={() =>
                               void run("toggle_item", { id: i.id })
                             }
                           >
                             Mark seen
                           </button>
+                          </span>
                         </div>
                       ))
                     ) : (
@@ -895,9 +913,7 @@ export default function App() {
                         <h2>In focus</h2>
                         <button
                           className="text-button"
-                          onClick={() => {
-                            setPage("Tasks", "Timers");
-                          }}
+                          onClick={() => void run("todo_open")}
                         >
                           View timers <Icon name="Arrow" size={14} />
                         </button>
@@ -914,7 +930,7 @@ export default function App() {
                       <h2>Next on your list</h2>
                       <button
                         className="text-button"
-                        onClick={() => setPage("Tasks", "Todos")}
+                        onClick={() => void run("todo_open")}
                       >
                         All todos <Icon name="Arrow" size={14} />
                       </button>
@@ -978,206 +994,6 @@ export default function App() {
                       )}
                     </section>
                   )}
-                </>
-              )}
-              {page === "Tasks" && (
-                <>
-                  <div className="tabs" role="group" aria-label="Task type">
-                    {["Todos", "Timers", "Reminders"].map((t) => (
-                      <button
-                        aria-pressed={tab === t}
-                        key={t}
-                        className={tab === t ? "active" : ""}
-                        onClick={() => {
-                          setTab(t);
-                        }}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                  <form className="editor" onSubmit={(e) => void saveForm(e)}>
-                    <label className="grow">
-                      {tab === "Timers" ? "What are you focusing on?" : "Title"}
-                      <input
-                        required={tab !== "Timers"}
-                        value={title}
-                        maxLength={240}
-                        onChange={(e) => setTitle(e.target.value)}
-                        placeholder={
-                          tab === "Todos"
-                            ? "A small next step…"
-                            : tab === "Timers"
-                              ? "Focus session"
-                              : "Remember to…"
-                        }
-                      />
-                    </label>
-                    {tab === "Timers" && (
-                      <label className="duration">
-                        Minutes
-                        <input
-                          type="number"
-                          min="1"
-                          max="1440"
-                          required
-                          value={minutes}
-                          onChange={(e) => setMinutes(e.target.value)}
-                        />
-                      </label>
-                    )}
-                    {tab === "Reminders" && (
-                      <label>
-                        When <small>local time</small>
-                        <input
-                          type="datetime-local"
-                          required
-                          value={due}
-                          onChange={(e) => setDue(e.target.value)}
-                        />
-                      </label>
-                    )}
-                    <button className="primary" disabled={busy}>
-                      {tab === "Timers"
-                        ? "Start timer"
-                        : edit
-                          ? "Save changes"
-                          : "Add " + (tab === "Todos" ? "todo" : "reminder")}
-                      <Icon name="Plus" size={16} />
-                    </button>
-                    {edit && (
-                      <button
-                        type="button"
-                        className="small-button"
-                        onClick={clearForm}
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </form>
-                  {tab === "Todos" ? (
-                    <TaskChecklist items={todos} busy={busy} save={saveTodo} />
-                  ) : tab === "Timers" ? (
-                    <>
-                      {timers.length ? (
-                        timers.map((i) => (
-                          <TimerRow key={i.id} item={i} action={run} />
-                        ))
-                      ) : (
-                        <Empty
-                          icon="Clock"
-                          title="Give one thing your attention."
-                        >
-                          Start a timer. It keeps running when the panel is
-                          closed in the native app.
-                        </Empty>
-                      )}
-                      <p className="explanation">
-                        Running timers include sleep. After quitting or
-                        restarting, recovery uses the saved clock deadline;
-                        manual clock changes can affect that fallback.
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      {items.filter(
-                        (i) =>
-                          i.kind === (tab === "Todos" ? "todo" : "reminder"),
-                      ).length ? (
-                        items
-                          .filter(
-                            (i) =>
-                              i.kind ===
-                              (tab === "Todos" ? "todo" : "reminder"),
-                          )
-                          .map((i) => (
-                            <div
-                              className={"row " + (i.done ? "completed" : "")}
-                              key={i.id}
-                            >
-                              {i.kind === "todo" ? (
-                                <input
-                                  className="checkbox"
-                                  type="checkbox"
-                                  checked={i.done}
-                                  aria-label={`Complete ${i.title}`}
-                                  onChange={() =>
-                                    void run("toggle_item", { id: i.id })
-                                  }
-                                />
-                              ) : (
-                                <div className="row-icon">
-                                  <Icon name="Clock" />
-                                </div>
-                              )}
-                              <div className="grow">
-                                <strong>{i.title}</strong>
-                                {i.dueAt > 0 && (
-                                  <span>
-                                    {i.done ? "Delivered to Needs me · " : ""}
-                                    {new Date(i.dueAt).toLocaleString()}
-                                  </span>
-                                )}
-                              </div>
-                              {!i.done && (
-                                <button
-                                  className="text-button"
-                                  onClick={() => {
-                                    setEdit(i);
-                                    setTitle(i.title);
-                                    setDue(
-                                      i.dueAt
-                                        ? new Date(
-                                            i.dueAt -
-                                              new Date().getTimezoneOffset() *
-                                                60000,
-                                          )
-                                            .toISOString()
-                                            .slice(0, 16)
-                                        : "",
-                                    );
-                                  }}
-                                >
-                                  Edit
-                                </button>
-                              )}
-                              <button
-                                className="icon-button danger"
-                                title={`Remove ${i.title}`}
-                                onClick={() =>
-                                  void run("remove_item", { id: i.id })
-                                }
-                              >
-                                <Icon name="Trash" />
-                              </button>
-                            </div>
-                          ))
-                      ) : (
-                        <Empty
-                          icon={tab === "Todos" ? "Tasks" : "Clock"}
-                          title={
-                            tab === "Todos"
-                              ? "A clear list starts here."
-                              : "Remember it, then let it go."
-                          }
-                        >
-                          {tab === "Todos"
-                            ? "Add a todo, or use quick capture from any screen."
-                            : "Add a one-off reminder. Due items stay in Needs me until you mark them seen."}
-                        </Empty>
-                      )}
-                    </>
-                  )}
-                  <details className="help-disclosure">
-                    <summary>
-                      Timers and reminders while Buddy is closed
-                    </summary>{" "}
-                    <p className="explanation">
-                      Notifications require the tray app to be running. Quit
-                      stops reminders; overdue items recover next launch.
-                      Windows may suppress banners.
-                    </p>
-                  </details>
                 </>
               )}
               <div
@@ -1454,6 +1270,49 @@ export default function App() {
                       </div>
                     </form>
                   </details>
+                  {recent.length > 0 && (
+                    <>
+                      <h2>Recent · last hour</h2>
+                      {recent.map((i) => (
+                        <article className="shelf-item recent" key={i.id}>
+                          <div className="row">
+                            <div className="grow">
+                              <strong>{i.title}</strong>
+                              <span className="path">{i.path}</span>
+                            </div>
+                            <button
+                              className="small-button"
+                              disabled={!native}
+                              onClick={() =>
+                                void run("pet_hold", { paths: [i.path] })
+                              }
+                            >
+                              Hold with pet
+                            </button>
+                            <button
+                              className="small-button"
+                              onClick={() =>
+                                void run("open_path", { path: i.path })
+                              }
+                            >
+                              Open <Icon name="Arrow" size={14} />
+                            </button>
+                            <button
+                              className="small-button"
+                              aria-label={`Pin ${i.title}`}
+                              disabled={busy || shelf.length >= 50}
+                              onClick={() =>
+                                void run("pin_recent", { id: i.id })
+                              }
+                            >
+                              Pin
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                      {shelf.length > 0 && <h2>Pinned</h2>}
+                    </>
+                  )}
                   {shelf.map((i) => (
                     <article className="shelf-item" key={i.id}>
                       <div className="row">
@@ -1579,6 +1438,26 @@ export default function App() {
                     </label>
                   </section>
                   <section className="settings-section">
+                    <h2>Keyboard</h2>
+                    <label>
+                      Shortcut to open the bar
+                      <select
+                        value={data?.hotkey || "Ctrl+Alt+Space"}
+                        onChange={(event) =>
+                          void run("set_hotkey", { keys: event.target.value })
+                        }
+                      >
+                        {["Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+K"].map(
+                          (keys) => (
+                            <option key={keys} value={keys}>
+                              {keys}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                  </section>
+                  <section className="settings-section">
                     <h2>Data and backups</h2>
                     <p className="explanation">
                       Todos, projects, notes, timers, and reminder history stay
@@ -1592,6 +1471,21 @@ export default function App() {
                       >
                         <Icon name="Download" />
                         Export backup
+                      </button>
+                      <button
+                        className="small-button"
+                        onClick={() =>
+                          void call<string>("diagnostics")
+                            .then((text) => navigator.clipboard.writeText(text))
+                            .then(() =>
+                              setNotice(
+                                "Diagnostics copied. They hold no todo text or file paths.",
+                              ),
+                            )
+                            .catch((e) => setError(String(e)))
+                        }
+                      >
+                        Copy diagnostics
                       </button>
                       <button
                         className="small-button"

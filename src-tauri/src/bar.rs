@@ -28,7 +28,9 @@ const OUTSIDE_CLICK: u32 = WM_APP + 32;
 const WIDTH: i32 = 500;
 const FILE_WIDTH: i32 = 680;
 const HEIGHT: i32 = 56;
-const ROW_HEIGHT: i32 = 48;
+const ROW_HEIGHT: i32 = 40;
+/// Key-hint strip under the result list.
+const FOOTER: i32 = 30;
 const VISIBLE_ROWS: usize = 5;
 #[derive(Clone)]
 enum Action {
@@ -49,6 +51,63 @@ enum Action {
     Open(String),
     OpenFile(String),
     Editor(String),
+    Agent(crate::chat_agent::Agent),
+    StartFocus(String),
+    Install(crate::chat_agent::Agent),
+    SignIn(crate::chat_agent::Agent),
+}
+/// Completions offered at the top level of the actions menu. Music is reachable from Tools only.
+const MENU_COMPLETIONS: [&str; 1] = ["/codex"];
+/// One row per agent; the label's "  ·  " part renders as the right-aligned status column.
+fn agent_rows(
+    chosen: Option<crate::chat_agent::Agent>,
+    installed: impl Fn(crate::chat_agent::Agent) -> bool,
+) -> Vec<(String, Action)> {
+    crate::chat_agent::AGENTS
+        .into_iter()
+        .map(|agent| {
+            let (status, action) = if !installed(agent) {
+                ("not installed", Action::Install(agent))
+            } else if chosen == Some(agent) {
+                ("connected", Action::Agent(agent))
+            } else {
+                ("ready", Action::Agent(agent))
+            };
+            (format!("{}  ·  {status}", agent.label()), action)
+        })
+        .collect()
+}
+unsafe fn show_agents(app: &tauri::AppHandle) {
+    use crate::chat_agent::{chosen, sign_in_pending, Agent};
+    let mut rows = Vec::new();
+    if let Some(agent) = sign_in_pending() {
+        rows.push((format!("Sign in to {}  ·  opens its console", agent.label()), Action::SignIn(agent)));
+    }
+    rows.extend(agent_rows(chosen(app), Agent::installed));
+    change(|b| b.finder = true);
+    choices(rows);
+    note("Connect an agent");
+}
+/// Logical size of the pet preview drawn beside the /pet list: the pet window, 128 x 136.
+const PREVIEW_WIDTH: i32 = 128;
+/// The pet to preview: whichever pet row is selected, so the preview follows the arrow keys.
+fn preview_for(rows: &[(String, Action)], selected: usize) -> Option<crate::pet_art::Appearance> {
+    match rows.get(selected) {
+        Some((_, Action::Pet(pet))) => Some(*pet),
+        _ => None,
+    }
+}
+/// Opens the bar (if hidden) with `text` already typed, e.g. "/pet" from the pet's menu.
+pub unsafe fn open_with(app: &tauri::AppHandle, pet: HWND, text: &str) {
+    if !get(|b| IsWindowVisible(b.hwnd).as_bool()).unwrap_or(false) {
+        toggle(app, pet);
+    }
+    fill(text);
+    refresh();
+}
+fn agent_status(app: &tauri::AppHandle) -> String {
+    use crate::chat_agent::{chosen, status_label, Agent};
+    status_label(chosen(app), Agent::installed)
 }
 struct Request {
     app: tauri::AppHandle,
@@ -87,6 +146,10 @@ struct Bar {
     file_search: bool,
     menu_active: bool,
     menu_theme: Option<crate::menu_theme::MenuTheme>,
+    agent_status: String,
+    /// True while the bar was opened by the greeting and the next plain Enter answers it.
+    focus_prompt: bool,
+    placeholder: &'static str,
 }
 impl Bar {
     fn visible_rows(&self) -> usize {
@@ -94,7 +157,7 @@ impl Bar {
         let area = unsafe { work_area(self.pet) };
         let scale = unsafe { GetDpiForWindow(self.pet).max(96) as i32 };
         let available = (area.bottom - area.top) * 96 / scale;
-        limit.min(((available - HEIGHT - 24) / ROW_HEIGHT).max(1) as usize)
+        limit.min(((available - HEIGHT - FOOTER - 24) / ROW_HEIGHT).max(1) as usize)
     }
 }
 thread_local! {static BAR:RefCell<Option<Bar>>=const{RefCell::new(None)};}
@@ -107,11 +170,58 @@ fn get<T>(f: impl FnOnce(&Bar) -> T) -> Option<T> {
 fn change<T>(f: impl FnOnce(&mut Bar) -> T) -> Option<T> {
     BAR.with(|s| s.borrow_mut().as_mut().map(f))
 }
+/// The input line: a paw mark on the left, the typing area, and a "/ commands" hint on the right.
+const PET_SLOT: i32 = 46;
+const HINT_WIDTH: i32 = 92;
+const PLACEHOLDER: &str = "Ask Kitty anything";
+/// Window names screen readers announce.
+pub const BAR_TITLE: &str = "Ask Kitty";
+/// The greeting hides itself if it is not answered within a minute.
+const GREETING_TIMER: usize = 41;
+pub fn greeting_line(first_run: bool) -> &'static str {
+    if first_run {
+        "Hi, I'm Kitty. What are we working on?"
+    } else {
+        "What are we working on?"
+    }
+}
+/// One greeting a day at most, never over a pinned focus, never in Quiet mode.
+pub fn should_greet(focus_pinned_today: bool, asked_today: bool, quiet: bool) -> bool {
+    !focus_pinned_today && !asked_today && !quiet
+}
+#[derive(Debug, PartialEq)]
+enum EnterKind {
+    Focus(String),
+    Normal,
+}
+/// While the greeting is open, plain words answer it; commands still run as commands.
+fn enter_kind(focus_prompt: bool, text: &str) -> EnterKind {
+    let text = text.trim();
+    if focus_prompt && !text.is_empty() && !text.starts_with('/') {
+        EnterKind::Focus(text.to_string())
+    } else {
+        EnterKind::Normal
+    }
+}
+/// Shows the bar beside the pet with the greeting as its placeholder, without taking focus.
+pub unsafe fn greet(app: &tauri::AppHandle, pet: HWND, first_run: bool) {
+    if get(|b| IsWindowVisible(b.hwnd).as_bool()).unwrap_or(false) {
+        return;
+    }
+    open(app, pet, Some(greeting_line(first_run)));
+    if let Some(hwnd) = get(|b| b.hwnd) {
+        let _ = SetTimer(Some(hwnd), GREETING_TIMER, 60_000, None);
+    }
+}
 unsafe fn note(text: &str) {
-    if let Some((hwnd, edit, status)) = get(|b| (b.hwnd, b.edit, b.status)) {
+    if let Some((hwnd, edit, status, placeholder)) = get(|b| (b.hwnd, b.edit, b.status, b.placeholder)) {
         let value = wide(text);
         let empty = GetWindowTextLengthW(edit) == 0;
-        let cue = wide(if empty { text } else { "" });
+        let cue = wide(match (empty, text.is_empty()) {
+            (true, true) => placeholder,
+            (true, false) => text,
+            _ => "",
+        });
         SendMessageW(
             edit,
             0x1501,
@@ -183,6 +293,13 @@ unsafe fn refresh() {
         b.file_search = false;
     });
     if text.is_empty() {
+        // While greeting, the question owns the empty bar; the agent picker waits for a normal open.
+        if let Some(app) = get(|b| (!b.focus_prompt).then(|| b.app.clone())).flatten() {
+            if crate::chat_agent::chosen(&app).is_none() || crate::chat_agent::sign_in_pending().is_some() {
+                show_agents(&app);
+                return;
+            }
+        }
         choices(
             commands::suggestions("")
                 .into_iter()
@@ -194,6 +311,11 @@ unsafe fn refresh() {
         return;
     }
     let command = commands::parse(&text);
+    if matches!(command, Ok(Parsed::Screen { .. })) {
+        if let Some(app) = get(|b| b.app.clone()) {
+            app.state::<Arc<crate::warm_ai::WarmState>>().prepare(&app);
+        }
+    }
     if let Some((_, hint, completion)) =
         commands::definitions()
             .into_iter()
@@ -218,6 +340,7 @@ unsafe fn refresh() {
             | Parsed::Imports
             | Parsed::Copy
             | Parsed::Pets
+            | Parsed::Agent
             | Parsed::Find(_))
     ) {
         let suggestions = commands::suggestions(&text);
@@ -274,6 +397,11 @@ unsafe fn refresh() {
             }
         }
         Ok(Parsed::Tools) => choices(vec![(String::new(), Action::Tools)]),
+        Ok(Parsed::Agent) => {
+            if let Some(app) = get(|b| b.app.clone()) {
+                show_agents(&app);
+            }
+        }
         Ok(Parsed::Panel(destination)) => {
             choices(vec![(String::new(), Action::Panel(destination))])
         }
@@ -321,7 +449,7 @@ unsafe fn refresh() {
                     .collect(),
             );
         }
-        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::Todo(_) | Parsed::Question(_) | Parsed::Screen { .. }) => {
+        Ok(Parsed::Timer { .. } | Parsed::Reminder { .. } | Parsed::ReminderAt { .. } | Parsed::Todo(_) | Parsed::Question(_) | Parsed::Screen { .. }) => {
             choices(vec![(String::new(), Action::Input(text))])
         }
         Err(_) => {
@@ -431,6 +559,24 @@ unsafe fn execute() {
     }) else {
         return;
     };
+    if let EnterKind::Focus(title) = enter_kind(get(|b| b.focus_prompt).unwrap_or(false), &contents()) {
+        change(|b| {
+            b.focus_prompt = false;
+            b.placeholder = PLACEHOLDER;
+        });
+        if let Some(hwnd) = get(|b| b.hwnd) {
+            let _ = KillTimer(Some(hwnd), GREETING_TIMER);
+        }
+        fill("");
+        change(|b| b.finder = true);
+        match crate::add_focus(&app, &title) {
+            Ok(id) => {
+                choices(vec![("Start 25 min focus  ·  pinned as today's focus".into(), Action::StartFocus(id))]);
+            }
+            Err(error) => choices(vec![(error, Action::Feedback)]),
+        }
+        return;
+    }
     // Screen commands execute on the first Enter, even while a completion row is selected.
     if let Ok(Parsed::Screen { question, fill }) = commands::parse(&contents()) {
         hide();
@@ -458,39 +604,20 @@ unsafe fn execute() {
                 crate::screen_helper::run_command(app.clone(), question, fill);
                 return;
             },
+            Ok(Parsed::Question(_)) if crate::chat_agent::route(crate::chat_agent::chosen(&app), crate::chat_agent::Agent::installed).is_err() => {
+                show_agents(&app);
+                return;
+            }
             Ok(Parsed::Question(question)) => match crate::screen_helper::quick_answer(app.clone(),question) {
                 Ok(()) => { hide(); return; }
                 Err(error) => Err(error),
             },
-            Ok(Parsed::Timer { minutes, title }) => start_timer(
-                app.clone(),
-                app.state::<Shared>(),
-                title,
-                minutes,
-                String::new(),
-            )
-            .map(|_| "Timer started.".to_string()),
-            Ok(Parsed::Todo(title)) => save_item(
-                app.clone(),
-                app.state::<Shared>(),
-                Item {
-                    kind: "todo".into(),
-                    title,
-                    ..Default::default()
-                },
-            )
-            .map(|_| "Todo saved.".to_string()),
-            Ok(Parsed::Reminder { minutes, title }) => save_item(
-                app.clone(),
-                app.state::<Shared>(),
-                Item {
-                    kind: "reminder".into(),
-                    title,
-                    due_at: now() + minutes as i64 * 60000,
-                    ..Default::default()
-                },
-            )
-            .map(|_| "Reminder saved.".to_string()),
+            Ok(
+                command @ (Parsed::Timer { .. }
+                | Parsed::Todo(_)
+                | Parsed::Reminder { .. }
+                | Parsed::ReminderAt { .. }),
+            ) => crate::apply_command(&app, command),
             _ => Err("Complete the command first.".into()),
         },
         Action::Tools => {
@@ -538,8 +665,40 @@ unsafe fn execute() {
             note("Pet selected");
             return;
         }
+        Action::Agent(agent) => {
+            crate::chat_agent::choose(&app, agent);
+            crate::chat_agent::flag_sign_in(None);
+            if agent != crate::chat_agent::Agent::Codex {
+                app.state::<Arc<crate::claude_chat::ClaudeState>>().prepare_for(agent);
+            }
+            change(|b| b.agent_status = agent_status(&app));
+            Ok(format!("{} connected. Ask anything.", agent.label()))
+        }
+        Action::StartFocus(id) => crate::focus_timer(&app, id)
+            .map(|_| "Focus started · 25 min".to_string()),
+        Action::Install(agent) => {
+            let url = wide(agent.install_url());
+            let result = windows::Win32::UI::Shell::ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(url.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            );
+            if result.0 as isize > 32 {
+                Ok(format!("Install {}, then type /agent.", agent.label()))
+            } else {
+                Err("Windows could not open the install page.".into())
+            }
+        }
+        Action::SignIn(agent) => crate::chat_agent::open_sign_in(agent).map(|_| {
+            crate::chat_agent::flag_sign_in(None);
+            format!("Finish signing in to {} in its window, then ask again.", agent.label())
+        }),
         Action::Open(path) => open_path(path).map(|_| "Folder opened.".to_string()),
         Action::OpenFile(path) => {
+            let opened = path.clone();
             let path = wide(&path);
             let result = windows::Win32::UI::Shell::ShellExecuteW(
                 None,
@@ -550,6 +709,7 @@ unsafe fn execute() {
                 SW_SHOWNORMAL,
             );
             if result.0 as isize > 32 {
+                crate::note_recent(&app, vec![opened]);
                 Ok("File opened.".into())
             } else {
                 Err("Windows could not open this file.".into())
@@ -589,6 +749,7 @@ unsafe fn execute() {
             note(&message);
         }
         Err(e) => {
+            crate::log_error(&app, &e);
             change(|bar| bar.finder = true);
             choices(vec![(e, Action::Feedback)]);
         }
@@ -779,7 +940,7 @@ unsafe fn show_actions() {
         command(child, &mut actions, "/settings");
         attach(menu, child, "Pet and appearance");
     }
-    for completion in ["/music", "/codex"] {
+    for completion in MENU_COMPLETIONS {
         command(menu, &mut actions, completion);
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
@@ -878,7 +1039,7 @@ unsafe fn layout(hwnd: HWND) {
     let has_note = GetWindowTextLengthW(status) > 0;
     let mut rect = RECT::default();
     let _ = GetClientRect(hwnd, &mut rect);
-    let height = HEIGHT + rows as i32 * ROW_HEIGHT + if rows > 0 { 8 } else { 0 };
+    let height = HEIGHT + rows as i32 * ROW_HEIGHT + if rows > 0 { FOOTER } else { 0 };
     let pet_dpi = GetDpiForWindow(pet).max(96) as i32;
     let width = if file_search { FILE_WIDTH } else { WIDTH };
     if rect.bottom != height * pet_dpi / 96 || rect.right != fitted_width(pet, width) {
@@ -887,44 +1048,32 @@ unsafe fn layout(hwnd: HWND) {
         let _ = InvalidateRect(Some(hwnd), None, true);
     }
     let width = rect.right;
-    let start = s(16);
-    let end = width - s(16);
+    let start = s(PET_SLOT);
+    let hint = GetWindowTextLengthW(edit) == 0;
+    let end = width - s(16) - if hint { s(HINT_WIDTH + 8) } else { 0 };
+    // The hint appears and disappears with the first typed character, so the line is repainted.
+    let _ = InvalidateRect(Some(hwnd), None, false);
     let status_width = if has_note { s(130).min(width / 3) } else { 0 };
     let _ = SetWindowPos(
         edit,
         None,
         start,
-        s(18),
+        s(15),
         (end - start - status_width).max(1),
-        s(22),
+        s(26),
         SWP_NOZORDER,
     );
     let _ = SetWindowPos(
         status,
         None,
         end - status_width + s(8),
-        s(18),
+        s(19),
         (status_width - s(8)).max(1),
-        s(22),
+        s(20),
         SWP_NOZORDER,
     );
     if get(|b| b.dpi) != Some(dpi) {
-        let font = CreateFontW(
-            -s(14),
-            0,
-            0,
-            0,
-            400,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY,
-            DEFAULT_PITCH.0 as u32,
-            w!("Segoe UI"),
-        );
+        let font = ui_font(dpi, 18, 400, w!("Segoe UI"));
         let old = change(|b| {
             let old = b.font;
             b.font = font;
@@ -1095,125 +1244,222 @@ unsafe fn paint(hwnd: HWND) {
             rect,
             dpi as u32,
             palette,
-            bar.font,
             &bar.choices,
             bar.selected,
             bar.visible_rows(),
             bar.finder,
-        )
+            &bar.agent_status,
+        );
+        render_header(dc, rect, dpi as u32, palette, GetWindowTextLengthW(bar.edit) == 0);
     });
     let _ = EndPaint(hwnd, &paint);
+}
+/// Blends `a` toward `b` by `t`/255. GDI text has no alpha, so muted ink is precomputed per paint.
+pub(crate) fn mix(a: COLORREF, b: COLORREF, t: u32) -> COLORREF {
+    let channel = |shift: u32| {
+        let (x, y) = ((a.0 >> shift) & 255, (b.0 >> shift) & 255);
+        ((x * (255 - t) + y * t) / 255) << shift
+    };
+    COLORREF(channel(0) | channel(8) | channel(16))
+}
+unsafe fn ui_font(dpi: u32, size: i32, weight: i32, face: PCWSTR) -> HFONT {
+    CreateFontW(
+        -(size * dpi as i32 / 96),
+        0,
+        0,
+        0,
+        weight,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY,
+        DEFAULT_PITCH.0 as u32,
+        face,
+    )
+}
+unsafe fn text(dc: HDC, value: &str, mut bounds: RECT, color: COLORREF, flags: DRAW_TEXT_FORMAT) {
+    SetTextColor(dc, color);
+    let mut wide: Vec<_> = value.encode_utf16().collect();
+    // Full row height + DT_VCENTER: descenders (g, j, p, y) are never clipped.
+    DrawTextW(
+        dc,
+        &mut wide,
+        &mut bounds,
+        flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+    );
+}
+/// "Ledger" layout: type carries the hierarchy, a single accent rule marks the selection,
+/// locations sit right-aligned in monospace, and a key-hint strip closes the list.
+unsafe fn render_header(
+    dc: HDC,
+    rect: RECT,
+    dpi: u32,
+    palette: crate::pet_art::Palette,
+    hint: bool,
+) {
+    let scale = |value: i32| value * dpi as i32 / 96;
+    // A 20-unit paw: one pad and four toes, in the accent colour, centred in the input line.
+    let (left, top) = (scale(16), (scale(HEIGHT) - scale(20)) / 2);
+    let brush = CreateSolidBrush(palette.accent);
+    let old_brush = SelectObject(dc, brush.into());
+    let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    for (x0, y0, x1, y1) in [(5, 9, 17, 20), (1, 5, 6, 11), (5, 1, 10, 7), (12, 1, 17, 7), (16, 5, 21, 11)] {
+        let _ = Ellipse(dc, left + scale(x0), top + scale(y0), left + scale(x1), top + scale(y1));
+    }
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(brush.into());
+    if !hint {
+        return;
+    }
+    let right = rect.right - scale(16);
+    let top = (scale(HEIGHT) - scale(24)) / 2;
+    let chip = RECT { left: right - scale(HINT_WIDTH), top, right, bottom: top + scale(24) };
+    let pen = CreatePen(PS_SOLID, 1, palette.outline);
+    let old_pen = SelectObject(dc, pen.into());
+    let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    let _ = RoundRect(dc, chip.left, chip.top, chip.right, chip.bottom, scale(8), scale(8));
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    let _ = DeleteObject(pen.into());
+    let mono = ui_font(dpi, 12, 400, w!("Consolas"));
+    let previous = SelectObject(dc, mono.into());
+    SetBkMode(dc, TRANSPARENT);
+    text(dc, "/ commands", chip, mix(palette.ink, palette.surface, 120), DT_CENTER);
+    SelectObject(dc, previous);
+    let _ = DeleteObject(mono.into());
 }
 unsafe fn render_bar(
     dc: HDC,
     rect: RECT,
     dpi: u32,
     palette: crate::pet_art::Palette,
-    font: HFONT,
     rows: &[(String, Action)],
     selected: usize,
     visible_rows: usize,
     finder: bool,
+    agent_status: &str,
 ) {
     let scale = |value: i32| value * dpi as i32 / 96;
+    let muted = mix(palette.ink, palette.surface, 105);
+    let faint = mix(palette.ink, palette.surface, 160);
     let surface = CreateSolidBrush(palette.surface);
     let outline = CreatePen(PS_SOLID, 1, palette.outline);
     let _ = FillRect(dc, &rect, surface);
     let old_brush = SelectObject(dc, surface.into());
     let old_pen = SelectObject(dc, outline.into());
-    let _ = RoundRect(dc, 0, 0, rect.right, rect.bottom, scale(22), scale(22));
-    if rect.bottom > scale(HEIGHT) {
-        SelectObject(dc, outline.into());
-        let _ = MoveToEx(dc, scale(12), scale(HEIGHT), None);
-        let _ = LineTo(dc, rect.right - scale(12), scale(HEIGHT));
-    }
+    let _ = RoundRect(dc, 0, 0, rect.right, rect.bottom, scale(10), scale(10));
     SelectObject(dc, old_brush);
     SelectObject(dc, old_pen);
-    {
-        let previous_font = SelectObject(dc, font.into());
-        SetBkMode(dc, TRANSPARENT);
-        if finder {
-            let first = selected / visible_rows * visible_rows;
-            for (index, (label, action)) in rows.iter().enumerate().skip(first).take(visible_rows) {
-                let top = HEIGHT + (index - first) as i32 * ROW_HEIGHT;
-                let mut bounds = RECT {
-                    left: scale(12),
-                    top: scale(top + 3),
-                    right: rect.right - scale(12),
-                    bottom: scale(top + ROW_HEIGHT - 2),
-                };
-                if index == selected {
-                    let highlight = CreateSolidBrush(palette.selection);
-                    let old = SelectObject(dc, highlight.into());
-                    let pen = SelectObject(dc, GetStockObject(NULL_PEN));
-                    let _ = RoundRect(
-                        dc,
-                        bounds.left,
-                        bounds.top,
-                        bounds.right,
-                        bounds.bottom,
-                        scale(9),
-                        scale(9),
-                    );
-                    SelectObject(dc, pen);
-                    SelectObject(dc, old);
-                    let _ = DeleteObject(highlight.into());
-                }
-                SetTextColor(
-                    dc,
-                    if index == selected {
-                        palette.accent
-                    } else {
-                        palette.ink
-                    },
-                );
-                bounds.left += scale(8);
-                bounds.right -= scale(8);
-                draw_result_icon(
-                    dc,
-                    bounds.left,
-                    (bounds.top + bounds.bottom - scale(22)) / 2,
-                    dpi as u32,
-                    action,
-                    palette.accent,
-                );
-                bounds.left += scale(40);
-                if let Some((name, detail)) = label.split_once("  ·  ") {
-                    let mut title_rect = RECT {
-                        bottom: bounds.top + scale(16),
-                        ..bounds
-                    };
-                    let mut title: Vec<_> = name.encode_utf16().collect();
-                    DrawTextW(
-                        dc,
-                        &mut title,
-                        &mut title_rect,
-                        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-                    );
-                    bounds.top += scale(15);
-                    SetTextColor(dc, palette.accent);
-                    let mut detail: Vec<_> = detail.encode_utf16().collect();
-                    DrawTextW(
-                        dc,
-                        &mut detail,
-                        &mut bounds,
-                        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-                    );
-                } else {
-                    let mut label: Vec<_> = label.encode_utf16().collect();
-                    DrawTextW(
-                        dc,
-                        &mut label,
-                        &mut bounds,
-                        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-                    );
-                }
-            }
-        }
-        SelectObject(dc, previous_font);
-    }
     let _ = DeleteObject(outline.into());
     let _ = DeleteObject(surface.into());
+    if !finder || rows.is_empty() || visible_rows == 0 {
+        return;
+    }
+    let rule = CreateSolidBrush(palette.outline);
+    let footer_top = rect.bottom - scale(FOOTER);
+    for y in [scale(HEIGHT), footer_top] {
+        let line = RECT { left: 1, top: y, right: rect.right - 1, bottom: y + 1 };
+        let _ = FillRect(dc, &line, rule);
+    }
+    let _ = DeleteObject(rule.into());
+    let regular = ui_font(dpi, 14, 400, w!("Segoe UI"));
+    let strong = ui_font(dpi, 14, 600, w!("Segoe UI"));
+    let mono = ui_font(dpi, 12, 400, w!("Consolas"));
+    let previous_font = SelectObject(dc, regular.into());
+    SetBkMode(dc, TRANSPARENT);
+    let first = selected / visible_rows * visible_rows;
+    let left = scale(54);
+    let right = rect.right - scale(16);
+    let preview = preview_for(rows, selected);
+    let row_right = right - if preview.is_some() { scale(PREVIEW_WIDTH + 12) } else { 0 };
+    let path_width = (right - left) * 2 / 5;
+    let kind_width = scale(76);
+    for (index, (label, action)) in rows.iter().enumerate().skip(first).take(visible_rows) {
+        let right = row_right;
+        let top = scale(HEIGHT) + 1 + scale((index - first) as i32 * ROW_HEIGHT);
+        let row = RECT { left, top, right, bottom: top + scale(ROW_HEIGHT) };
+        let chosen = index == selected;
+        if chosen {
+            let mark = CreateSolidBrush(palette.accent);
+            let bar = RECT {
+                left: 1,
+                top: row.top + scale(9),
+                right: 1 + scale(3),
+                bottom: row.bottom - scale(9),
+            };
+            let _ = FillRect(dc, &bar, mark);
+            let _ = DeleteObject(mark.into());
+        }
+        draw_result_icon(
+            dc,
+            scale(18),
+            (row.top + row.bottom - scale(22)) / 2,
+            dpi,
+            action,
+            if chosen { palette.accent } else { muted },
+        );
+        let parts: Vec<&str> = label.split("  ·  ").collect();
+        let (name, kind, place) = match parts.as_slice() {
+            [name, kind, place, ..] => (*name, Some(*kind), Some(*place)),
+            [name, place] => (*name, None, Some(*place)),
+            _ => (label.as_str(), None, None),
+        };
+        let mut name_bounds = row;
+        if let Some(place) = place {
+            SelectObject(dc, mono.into());
+            let place_bounds = RECT { left: right - path_width, ..row };
+            text(dc, place, place_bounds, faint, DT_RIGHT | DT_PATH_ELLIPSIS);
+            name_bounds.right = place_bounds.left - scale(12);
+            if let Some(kind) = kind {
+                let kind_bounds = RECT {
+                    left: place_bounds.left - scale(12) - kind_width,
+                    right: place_bounds.left - scale(12),
+                    ..row
+                };
+                text(dc, &kind.to_lowercase(), kind_bounds, muted, DT_END_ELLIPSIS);
+                name_bounds.right = kind_bounds.left - scale(10);
+            }
+        }
+        SelectObject(dc, if chosen { strong } else { regular }.into());
+        text(dc, name, name_bounds, palette.ink, DT_END_ELLIPSIS);
+    }
+    if let Some(pet) = preview {
+        // The pet art draws its own 128 x 136 window at the bar's DPI, centred in the rows area.
+        let saved = SaveDC(dc);
+        let top = scale(HEIGHT) + ((footer_top - scale(HEIGHT) - scale(136)) / 2).max(0);
+        let _ = OffsetViewportOrgEx(dc, right - scale(PREVIEW_WIDTH), top, None);
+        crate::pet_art::draw_pose_accessory(
+            dc,
+            pet,
+            false,
+            dpi as i32,
+            crate::pet_art::AnimationSet::neutral_still_pose(),
+            None,
+            false,
+            None,
+            false,
+        );
+        let _ = RestoreDC(dc, saved);
+    }
+    SelectObject(dc, mono.into());
+    let footer = RECT { left: scale(18), top: footer_top, right, bottom: rect.bottom };
+    let completes = matches!(rows.get(selected), Some((_, Action::Complete(_))));
+    let hints = if completes {
+        "↑↓ move   enter run   tab complete   esc close"
+    } else {
+        "↑↓ move   enter open   esc close"
+    };
+    text(dc, hints, footer, faint, DT_LEFT);
+    let count = format!("{agent_status}     {} / {}", (selected + 1).min(rows.len()), rows.len());
+    text(dc, &count, footer, muted, DT_RIGHT);
+    SelectObject(dc, previous_font);
+    for font in [regular, strong, mono] {
+        let _ = DeleteObject(font.into());
+    }
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1226,6 +1472,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     match msg {
         OUTSIDE_CLICK => {
             hide();
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == GREETING_TIMER => {
+            let _ = KillTimer(Some(hwnd), GREETING_TIMER);
+            let untouched = get(|b| b.focus_prompt && GetWindowTextLengthW(b.edit) == 0).unwrap_or(false);
+            if untouched && GetForegroundWindow() != hwnd {
+                hide();
+            }
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
@@ -1243,8 +1497,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 && change(|bar| {
                     let visible_rows = bar.visible_rows();
                     let first = bar.selected / visible_rows * visible_rows;
-                    let index = first + ((y - HEIGHT) / ROW_HEIGHT) as usize;
-                    if bar.finder && index < bar.choices.len() {
+                    let offset = ((y - HEIGHT) / ROW_HEIGHT) as usize;
+                    let index = first + offset;
+                    if bar.finder && offset < visible_rows && index < bar.choices.len() {
                         bar.selected = index;
                         true
                     } else {
@@ -1407,6 +1662,10 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
             return;
         }
     }
+    open(app, pet, None);
+}
+/// Opens the bar. A greeting opens it without taking focus and with the question as placeholder.
+unsafe fn open(app: &tauri::AppHandle, pet: HWND, greeting: Option<&'static str>) {
     if get(|b| b.hwnd).is_none() {
         let instance = match GetModuleHandleW(None) {
             Ok(v) => v,
@@ -1422,7 +1681,7 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             class,
-            w!("Desktop Buddy commands"),
+            PCWSTR(wide(BAR_TITLE).as_ptr()),
             WS_POPUP,
             0,
             0,
@@ -1494,6 +1753,9 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
                 file_search: false,
                 menu_active: false,
                 menu_theme: None,
+                agent_status: String::new(),
+                focus_prompt: false,
+                placeholder: PLACEHOLDER,
             })
         });
         SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(1024)), None);
@@ -1501,18 +1763,37 @@ pub unsafe fn toggle(app: &tauri::AppHandle, pet: HWND) {
     let Some((hwnd, edit)) = get(|b| (b.hwnd, b.edit)) else {
         return;
     };
+    let activate = greeting.is_none();
+    let _ = KillTimer(Some(hwnd), GREETING_TIMER);
+    change(|b| {
+        b.focus_prompt = !activate;
+        b.placeholder = greeting.unwrap_or(PLACEHOLDER);
+    });
     fill("");
+    change(|b| b.agent_status = agent_status(app));
     position(hwnd, pet, WIDTH, HEIGHT);
     layout(hwnd);
     refresh();
-    let _ = ShowWindow(hwnd, SW_SHOW);
-    let _ = SetForegroundWindow(hwnd);
-    let _ = SetFocus(Some(edit));
+    if activate {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(Some(edit));
+    } else {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
     let module = GetModuleHandleW(None).ok().map(Into::into);
     let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_mouse), module, 0).ok();
     change(|bar| bar.click_hook = hook);
     crate::pet::bar_visibility(app, IsWindowVisible(hwnd).as_bool());
-    app.state::<Arc<crate::warm_ai::WarmState>>().prepare(app);
+    if !activate {
+        return;
+    }
+    // Only the connected agent is warmed on open; Codex keeps its own warm path for screen commands.
+    if let Some(agent) = crate::chat_agent::chosen(app)
+        .filter(|agent| *agent != crate::chat_agent::Agent::Codex && agent.installed())
+    {
+        app.state::<Arc<crate::claude_chat::ClaudeState>>().prepare_for(agent);
+    }
     crate::navigation::prepare(app);
 }
 
@@ -1559,6 +1840,156 @@ unsafe fn position(hwnd: HWND, pet: HWND, width: i32, height: i32) {
 mod tests {
     use super::*;
     #[test]
+    fn agent_rows_mark_status() {
+        use crate::chat_agent::Agent;
+        let rows = agent_rows(Some(Agent::Claude), |agent| agent != Agent::Codex);
+        assert!(rows[0].0.contains("Claude Code") && rows[0].0.contains("connected"));
+        assert!(rows[1].0.contains("not installed"));
+        assert!(matches!(rows[1].1, Action::Install(Agent::Codex)));
+        assert!(matches!(rows[2].1, Action::Agent(Agent::Antigravity)));
+    }
+    #[test]
+    fn pets_list_sets_preview_to_selection() {
+        let rows: Vec<(String, Action)> = crate::pet::APPEARANCES
+            .into_iter()
+            .map(|pet| (pet.label().to_string(), Action::Pet(pet)))
+            .collect();
+        assert_eq!(preview_for(&rows, 2), Some(crate::pet::APPEARANCES[2]));
+        assert_eq!(preview_for(&[], 0), None);
+        assert_eq!(preview_for(&[("Open tools".into(), Action::Tools)], 0), None);
+    }
+    #[test]
+    fn render_pet_picker_draws_the_selected_pet_in_the_preview_cell() {
+        unsafe {
+            let dpi = 144u32;
+            let s = |value: i32| value * dpi as i32 / 96;
+            let (width, height) = (s(WIDTH), s(HEIGHT + ROW_HEIGHT * 5 + FOOTER));
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: 40,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let old = SelectObject(dc, bitmap.into());
+            let rows: Vec<(String, Action)> = crate::pet::APPEARANCES
+                .into_iter()
+                .map(|pet| (pet.label().to_string(), Action::Pet(pet)))
+                .collect();
+            let palette = crate::pet_art::Appearance::Calico.palette();
+            render_bar(dc, RECT { left: 0, top: 0, right: width, bottom: height }, dpi, palette, &rows, 1, 5, true, "claude · ready");
+            let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+            let surface = palette.surface.0;
+            let bgr = |c: u32| (c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff);
+            let (cell_left, cell_top) = (width - s(16) - s(PREVIEW_WIDTH), s(HEIGHT) + s(32));
+            let mut painted = 0;
+            for y in cell_top..cell_top + s(96) {
+                for x in cell_left..width - s(16) {
+                    if pixels[(y * width + x) as usize] & 0xffffff != bgr(surface) {
+                        painted += 1;
+                    }
+                }
+            }
+            assert!(painted > 2000, "pet preview drew only {painted} pixels");
+            if let Some(path) = std::env::var_os("BUDDY_PET_PICKER_PREVIEW") {
+                let rgb: Vec<u8> = pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
+                let mut out = Vec::new();
+                {
+                    let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+                    encoder.set_color(png::ColorType::Rgb);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder.write_header().unwrap().write_image_data(&rgb).unwrap();
+                }
+                std::fs::write(path, out).unwrap();
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+        }
+    }
+    #[test]
+    fn empty_bar_header_draws_the_paw_and_the_command_hint() {
+        unsafe {
+            let dpi = 144u32;
+            let s = |value: i32| value * dpi as i32 / 96;
+            let (width, height) = (s(WIDTH), s(HEIGHT));
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: 40,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let old = SelectObject(dc, bitmap.into());
+            let palette = crate::pet_art::Appearance::Calico.palette();
+            let rect = RECT { left: 0, top: 0, right: width, bottom: height };
+            render_bar(dc, rect, dpi, palette, &[], 0, 5, false, "claude · ready");
+            render_header(dc, rect, dpi, palette, true);
+            let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+            let bgr = |c: u32| (c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff);
+            let surface = bgr(palette.surface.0);
+            let painted = |x0: i32, x1: i32| {
+                (s(6)..height - s(6))
+                    .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                    .filter(|(x, y)| pixels[(y * width + x) as usize] & 0xffffff != surface)
+                    .count()
+            };
+            assert!(painted(s(8), s(PET_SLOT)) > 300, "paw missing");
+            assert!(painted(width - s(16) - s(HINT_WIDTH), width - s(16)) > 60, "command hint missing");
+            assert!(painted(s(PET_SLOT) + s(8), width - s(16) - s(HINT_WIDTH) - s(8)) == 0, "input area must stay clear");
+            if let Some(path) = std::env::var_os("BUDDY_BAR_HEADER_PREVIEW") {
+                let rgb: Vec<u8> = pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
+                let mut out = Vec::new();
+                {
+                    let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+                    encoder.set_color(png::ColorType::Rgb);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder.write_header().unwrap().write_image_data(&rgb).unwrap();
+                }
+                std::fs::write(path, out).unwrap();
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+        }
+    }
+    #[test]
+    fn greeting_rules() {
+        assert!(should_greet(false, false, false));
+        assert!(!should_greet(true, false, false));
+        assert!(!should_greet(false, true, false));
+        assert!(!should_greet(false, false, true));
+        assert_eq!(greeting_line(false), "What are we working on?");
+        assert!(greeting_line(true).starts_with("Hi, I'm Kitty."));
+    }
+    #[test]
+    fn plain_open_is_not_a_focus_answer() {
+        assert_eq!(enter_kind(false, "essay"), EnterKind::Normal);
+        assert_eq!(enter_kind(true, " essay draft "), EnterKind::Focus("essay draft".into()));
+        assert_eq!(enter_kind(true, "/t 5m"), EnterKind::Normal);
+        assert_eq!(enter_kind(true, "   "), EnterKind::Normal);
+    }
+    #[test]
+    fn actions_menu_has_no_music() {
+        assert!(!MENU_COMPLETIONS.contains(&"/music"));
+    }
+    #[test]
     fn render_toolbar_palettes_and_scaled_results_without_desktop_input() {
         unsafe {
             let width = 2280i32;
@@ -1583,22 +2014,7 @@ mod tests {
             let mut x = 0;
             for dpi in [96, 144, 192] {
                 let s = |value: i32| value * dpi as i32 / 96;
-                let font = CreateFontW(
-                    -s(14),
-                    0,
-                    0,
-                    0,
-                    400,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET,
-                    OUT_DEFAULT_PRECIS,
-                    CLIP_DEFAULT_PRECIS,
-                    DEFAULT_QUALITY,
-                    DEFAULT_PITCH.0 as u32,
-                    w!("Segoe UI"),
-                );
+                let font = ui_font(dpi, 18, 400, w!("Segoe UI"));
                 for (row, pet) in [
                     crate::pet_art::Appearance::Calico,
                     crate::pet_art::Appearance::Dog,
@@ -1618,6 +2034,7 @@ mod tests {
                             "Algorithms  ·  Project  ·  C:\\Projects\\Algorithms".into(),
                             Action::Open("C:\\Projects\\Algorithms".into()),
                         ),
+                        ("Open tools".into(), Action::Tools),
                     ];
                     render_bar(
                         dc,
@@ -1625,22 +2042,22 @@ mod tests {
                             left: 0,
                             top: 0,
                             right: s(WIDTH),
-                            bottom: s(HEIGHT + ROW_HEIGHT * 2 + 8),
+                            bottom: s(HEIGHT + ROW_HEIGHT * 3 + FOOTER),
                         },
                         dpi,
                         palette,
-                        font,
                         &rows,
                         0,
                         5,
                         true,
+                        "claude · ready",
                     );
                     let previous_font = SelectObject(dc, font.into());
                     let mut input = RECT {
                         left: s(16),
-                        top: s(18),
+                        top: s(15),
                         right: s(WIDTH - 16),
-                        bottom: s(42),
+                        bottom: s(41),
                     };
                     let mut text: Vec<_> = "notes".encode_utf16().collect();
                     SetTextColor(dc, palette.ink);

@@ -26,7 +26,6 @@ for (const theme of ["dark", "light"])
       ).toBeVisible();
       for (const label of [
         "Overview",
-        "Tasks",
         "Shelf",
         "Screen helper",
         "Music",
@@ -57,12 +56,11 @@ for (const theme of ["dark", "light"])
       expect(calls).not.toContain("browser_generate");
     });
   }
-test("checklist edits, cancellation, completion and completed disclosure", async ({
+test("checklist edits, cancellation and completion in the Todo list", async ({
   page,
 }) => {
   await installFixture(page);
-  await page.goto("/");
-  await go(page, "Tasks");
+  await page.goto("/?surface=todo");
   const title = page.getByRole("textbox", {
     name: "Edit Review the browser-helper setup",
     exact: true,
@@ -72,21 +70,13 @@ test("checklist edits, cancellation, completion and completed disclosure", async
   await expect(title).toHaveValue("Review the browser-helper setup");
   await title.fill("Review the release checklist");
   await title.press("Enter");
-  // Completion moves the row into a closed disclosure, so assert the resulting
-  // list state instead of Playwright's in-place checkbox postcondition.
+  // Completion keeps the row in the list, sorted below open todos.
   await page
     .getByRole("checkbox", {
       name: "Complete Review the release checklist",
       exact: true,
     })
     .click();
-  await expect(
-    page.getByRole("checkbox", {
-      name: "Complete Review the release checklist",
-      exact: true,
-    }),
-  ).toBeHidden();
-  await page.locator(".completed-todos > summary").click();
   await expect(
     page.getByRole("checkbox", {
       name: "Complete Review the release checklist",
@@ -151,22 +141,9 @@ test("native destinations focus the matching workspace and acknowledge once", as
   await expect(page.getByRole("heading", {name:"Settings",exact:true})).toBeVisible();
   await page.evaluate(() => (window as any).fixtureEmit("panel-navigation", {id:2,destination:"resume"}));
   await expect(page.getByRole("heading", {name:"Settings",exact:true})).toBeVisible();
-  await page.evaluate(() => {
-    (window as any).fixtureEmit("panel-navigation", {
-      id: 4,
-      destination: "timers",
-    });
-    (window as any).fixtureEmit("panel-navigation", {
-      id: 3,
-      destination: "reminders",
-    });
-  });
-  await expect(
-    page.getByRole("button", { name: "Timers", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
   await expect
     .poll(() => page.evaluate(() => (window as any).fixtureAcks))
-    .toEqual([1, 2, 4]);
+    .toEqual([1, 2]);
 });
 test("keyboard can skip chrome and edit a checklist", async ({ page }) => {
   await installFixture(page);
@@ -178,12 +155,6 @@ test("keyboard can skip chrome and edit a checklist", async ({ page }) => {
   ).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.locator("#main-content")).toBeFocused();
-  await go(page, "Tasks");
-  await page.getByRole("button", { name: "Timers", exact: true }).focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("button", { name: "Timers", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
 });
 test.skip("pending decisions remain discoverable and receipt links cross workspaces", async ({
   page,
@@ -321,10 +292,7 @@ test("empty data, loading recovery and reduced-motion compact layout", async ({
       (button as HTMLButtonElement).click();
     });
   await expect(page.locator(".loading")).toHaveCount(0);
-  await go(page, "Tasks");
-  await expect(
-    page.getByRole("textbox", { name: "Title", exact: true }),
-  ).toBeVisible();
+  await go(page, "Shelf");
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth > innerWidth,
@@ -628,4 +596,101 @@ test("held previews are compact, safely render text, and open links only on requ
  await page.getByRole("button",{name:"Open link",exact:true}).click();
  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((call:any)=>call.command==="held_preview_open").length)).toBe(1);
  expect(await page.evaluate(()=>performance.getEntriesByType("resource").some(entry=>entry.name.includes("/src/App.tsx")))).toBe(false);
+});
+
+test("removed todos can be undone and due alerts snoozed", async ({ page }) => {
+  await page.setViewportSize({ width: 300, height: 420 });
+  await installFixture(page);
+  await page.goto("/?surface=todo");
+  const row = page.getByRole("checkbox", { name: "Complete Review the browser-helper setup", exact: true });
+  await expect(row).toBeVisible();
+  await page.locator(".todo-check-row").first().hover();
+  await page.getByRole("button", { name: "Remove Review the browser-helper setup", exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(row).toBeVisible();
+  await expect(page.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.goto("/");
+  const alert = page.getByText("Your focus session finished", { exact: true });
+  await expect(alert).toBeVisible();
+  await page.getByRole("button", { name: "+10m", exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { fixtureCalls: { command: string; args: unknown }[] }).fixtureCalls.filter((c) => c.command === "snooze_item"))).toEqual([{ command: "snooze_item", args: { id: "due-focus", minutes: 10 } }]);
+});
+
+test("shelf shows recent above pinned with Pin", async ({ page }) => {
+  await installFixture(page);
+  await page.goto("/");
+  await go(page, "Shelf");
+  const heading = page.getByRole("heading", { name: "Recent · last hour" });
+  await expect(heading).toBeVisible();
+  const recent = page.locator(".shelf-item.recent");
+  await expect(recent).toHaveCount(1);
+  await expect(recent.getByRole("button", { name: "Hold with pet" })).toBeVisible();
+  await expect(recent.getByRole("button", { name: /^Open/ })).toBeVisible();
+  const recentTop = (await recent.boundingBox())!.y;
+  const pinnedTop = (await page.locator(".shelf-item:not(.recent)").first().boundingBox())!.y;
+  expect(recentTop).toBeLessThan(pinnedTop);
+  await recent.getByRole("button", { name: "Pin Lecture slides.pdf" }).click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).fixtureCalls.some(
+        (call: any) => call.command === "pin_recent" && call.args.id === "rc1",
+      ),
+    ),
+  ).toBe(true);
+});
+
+test("todo pop-up holds focus, tags and unlinked clocks", async ({ page }) => {
+  await page.setViewportSize({ width: 300, height: 520 });
+  await installFixture(page);
+  await page.goto("/?surface=todo");
+  const focus = page.locator(".todo-focus");
+  await expect(focus).toContainText("Today's focus");
+  await expect(focus.getByRole("textbox", { name: "Edit Review the browser-helper setup" })).toBeVisible();
+  await expect(focus.locator(".todo-tag")).toContainText("15:30");
+  const clocks = page.locator(".todo-clock-row");
+  await expect(clocks.filter({ hasText: "Stretch" })).toHaveCount(1);
+  await expect(clocks.filter({ hasText: "Algorithms practice" })).toHaveCount(1);
+  await expect(clocks.filter({ hasText: "Review the browser-helper setup" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Start 25 min focus for Write the complexity analysis" }).click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).fixtureCalls.some(
+        (call: any) => call.command === "start_focus" && call.args.id === "t2",
+      ),
+    ),
+  ).toBe(true);
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+});
+
+test("tools window has no Tasks page and task links open the Todo list", async ({ page }) => {
+  await installFixture(page);
+  await page.goto("/");
+  await page.locator(".nav-item").first().waitFor({ state: "attached" });
+  await expect(page.locator(".nav-item").filter({ hasText: /^Tasks/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "All todos" }).click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).fixtureCalls.some((call: any) => call.command === "todo_open"),
+    ),
+  ).toBe(true);
+});
+
+test("settings pick the hotkey and copy diagnostics", async ({ page }) => {
+  await installFixture(page);
+  await page.addInitScript(() => {
+    (navigator as any).clipboard.writeText = async () => {};
+  });
+  await page.goto("/");
+  await go(page, "Settings");
+  await page.getByRole("combobox", { name: "Shortcut to open the bar" }).selectOption("Alt+Shift+K");
+  await page.getByRole("button", { name: "Copy diagnostics" }).click();
+  const calls = await page.evaluate(() => (window as any).fixtureCalls.map((call: any) => call));
+  expect(calls.some((call: any) => call.command === "set_hotkey" && call.args.keys === "Alt+Shift+K")).toBe(true);
+  expect(calls.some((call: any) => call.command === "diagnostics")).toBe(true);
 });

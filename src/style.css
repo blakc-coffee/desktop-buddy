@@ -97,13 +97,66 @@ body:has(.todo-window) {
 @media (prefers-reduced-motion: reduce) {
   .todo-check-row .todo-remove { transition: none; }
 }
-.todo-check-row input[type="checkbox"] {
-  appearance: auto;
-  width: 18px;
-  height: 18px;
-  accent-color: var(--todo-accent);
+/* Paw-stamp todo check. The native checkbox stays (keyboard, screen readers, forms);
+   only its drawing changes: a dashed slot that gets stamped with a tilted paw. */
+:is(.overview-todo, .todo-check-row) input[type="checkbox"],
+input.checkbox {
+  appearance: none;
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  margin: 0;
+  border: 1.5px dashed var(--faint);
+  border-radius: 6px;
+  background: none;
+  color: var(--accent);
   cursor: pointer;
-  flex: 0 0 18px;
+  transition: border-color 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.todo-window input[type="checkbox"] {
+  border-color: var(--todo-outline);
+  color: var(--todo-accent);
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]::before,
+input.checkbox::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cellipse cx='12' cy='16.2' rx='5.4' ry='4.6'/%3E%3Cellipse cx='5.2' cy='10.6' rx='2.2' ry='2.8'/%3E%3Cellipse cx='9.4' cy='6.4' rx='2.2' ry='2.9'/%3E%3Cellipse cx='14.6' cy='6.4' rx='2.2' ry='2.9'/%3E%3Cellipse cx='18.8' cy='10.6' rx='2.2' ry='2.8'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0;
+  transform: scale(1.8) rotate(-14deg);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    opacity 120ms ease-out;
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]:checked,
+input.checkbox:checked {
+  border-color: transparent;
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]:checked::before,
+input.checkbox:checked::before {
+  opacity: 1;
+  transform: scale(1) rotate(-14deg);
+}
+@media (hover: hover) {
+  :is(.overview-todo, .todo-check-row) input[type="checkbox"]:not(:checked):hover,
+  input.checkbox:not(:checked):hover {
+    border-color: currentColor;
+  }
+}
+:is(.overview-todo, .todo-check-row) input[type="checkbox"]:focus-visible,
+input.checkbox:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.overview-todo, .todo-check-row) input[type="checkbox"]::before,
+  input.checkbox::before {
+    transform: rotate(-14deg);
+    transition: opacity 100ms ease-out;
+  }
 }
 .todo-check-row input[type="text"],
 .todo-check-row input:not([type]) {
@@ -129,6 +182,22 @@ body:has(.todo-window) {
 }
 .todo-empty {
   opacity: 0.8;
+}
+.todo-undo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+}
+.todo-undo button {
+  background: none;
+  border: 0;
+  color: var(--todo-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
 }
 .fill-setup {
   max-width: 68ch;
@@ -1446,83 +1515,198 @@ body:has(.todo-window) {
 .app-shell > main {
   min-height: 100vh;
 }
+/* Ledger shell: one surface, type carries the hierarchy, a single accent rule marks
+   "you are here". No filled pills, no badge chips, no marketing subtitles. */
 .app-shell .sidebar {
-  width: 196px;
-  padding: 24px 12px 18px;
+  width: 184px;
+  padding: 22px 0 18px;
   height: 100dvh;
+  background: var(--bg);
 }
 .app-shell .brand {
   gap: 10px;
-  margin: 0 8px 28px;
-}
-.app-shell .brand small {
-  font-size: 11px;
-  line-height: 1.5;
+  margin: 0 20px 28px;
+  font-size: 14px;
+  font-weight: 600;
 }
 .app-shell .brand-mark {
-  width: 34px;
-  height: 36px;
+  width: auto;
+  height: auto;
   color: var(--accent);
-  background: var(--raised);
-  border-radius: 10px;
+  background: none;
 }
 .app-shell .sidebar nav {
-  gap: 4px;
+  gap: 0;
 }
 .app-shell .nav-item {
-  min-height: 42px;
-  border-radius: 7px;
-  padding: 10px 12px;
-  font-size: 13px;
+  min-height: 36px;
+  border-radius: 0;
+  padding: 8px 20px;
+  font-size: 14px;
+  color: var(--muted);
+  box-shadow: inset 2px 0 0 transparent;
+}
+.app-shell .nav-item:hover {
+  background: none;
+  color: var(--text);
 }
 .app-shell .nav-item.selected {
-  background: var(--raised);
-  color: var(--accent);
+  background: none;
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .app-shell .nav-item b {
   margin-left: auto;
-  font-size: 11px;
-  min-width: 20px;
-  text-align: center;
+  background: none;
+  color: var(--accent);
+  font: 500 12px/16px Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+.app-shell .shortcut-hint {
+  padding: 16px 20px 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--faint);
+  display: block;
+}
+.app-shell .shortcut-hint kbd {
+  font: 12px Consolas, ui-monospace, monospace;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0;
 }
 .app-shell .navigation-toggle {
   display: none;
 }
 .app-shell .toolbar {
-  height: 72px;
-  padding: 14px 28px;
+  height: 64px;
+  padding: 12px 32px;
 }
 .app-shell .capture {
-  max-width: 740px;
-  min-height: 42px;
+  max-width: none;
+  height: 40px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
 }
-.app-shell .capture > svg {
+.app-shell .capture input {
+  font-size: 16px;
+  color: var(--text);
+}
+.app-shell .capture input::placeholder {
+  color: var(--faint);
+}
+.app-shell .capture button {
+  padding: 4px 8px;
+  font-size: 12px;
   color: var(--accent);
+}
+.app-shell .capture button:disabled {
+  visibility: hidden;
+}
+.app-shell .capture kbd {
+  font: 12px Consolas, ui-monospace, monospace;
+  color: var(--faint);
+  background: none;
+  border: 0;
 }
 .app-shell .content {
   width: 100%;
-  max-width: 1160px;
-  margin: 0 auto;
-  padding: 28px 32px 40px;
+  max-width: 960px;
+  margin: 0;
+  padding: 32px 32px 40px;
 }
 .app-shell .page-heading {
-  margin-bottom: 28px;
+  margin-bottom: 32px;
 }
 .app-shell h1 {
-  font-size: 27px;
-  letter-spacing: -0.025em;
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 .app-shell h2 {
-  font-size: 16px;
-}
-.app-shell .page-heading p {
-  max-width: 68ch;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--muted);
-  margin-top: 8px;
-  font-size: 14px;
+}
+.app-shell h2 .number {
+  font: 12px Consolas, ui-monospace, monospace;
+  color: var(--accent);
+  letter-spacing: 0;
 }
 .app-shell .section-heading {
-  margin-bottom: 14px;
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.app-shell .ledger-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) auto auto;
+  gap: 16px;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 0;
+}
+.app-shell .ledger-row .grow {
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-shell .row-time {
+  font: 12px/16px Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+.app-shell .row-tag {
+  font: 12px/16px Consolas, ui-monospace, monospace;
+  text-transform: lowercase;
+  color: var(--muted);
+}
+.app-shell .row-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 100ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.app-shell .ledger-row:hover .row-actions,
+.app-shell .ledger-row:focus-within .row-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .app-shell .row-actions {
+    opacity: 1;
+  }
+}
+.app-shell .row-actions .text-button {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--accent);
+}
+@media (max-width: 560px) {
+  .app-shell .ledger-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+  }
+  .app-shell .row-time {
+    grid-row: 2;
+  }
+  .app-shell .row-tag {
+    display: none;
+  }
+  .app-shell .row-actions {
+    grid-row: 1 / 3;
+    grid-column: 2;
+  }
 }
 .app-shell label {
   font-size: 13px;
@@ -1616,8 +1800,6 @@ body:has(.todo-window) {
   cursor: pointer;
 }
 .overview-todo input {
-  width: 18px;
-  height: 18px;
   margin: 0 6px;
 }
 .list-empty {
@@ -2174,9 +2356,17 @@ body:has(.held-preview) { min-width: 280px; }
 .held-preview button {min-height:32px;flex-shrink:0;}
 .setting-row small {display:block;font-size:12px;color:var(--muted);line-height:1.5;}
 
-:root[data-pet="siamese"] {--accent:#a5bccc;--accent-text:#273943;}
-:root[data-pet="blue-cat"] {--accent:#acafc2;--accent-text:#303344;}
-:root[data-pet="dachshund"],:root[data-pet="red-panda"] {--accent:#d39a74;--accent-text:#3c281e;}
+:root[data-pet="dachshund"] {--accent:#d39a74;--accent-text:#3c281e;}
 :root[data-pet="samoyed"],:root[data-pet="collie"] {--accent:#d3cad6;--accent-text:#36303c;}
 :root[data-pet="otter"] {--accent:#b99773;--accent-text:#33271c;}
 :root[data-pet="capybara"] {--accent:#bdaa7a;--accent-text:#322d1e;}
+
+.todo-check-row .todo-start { opacity: 0; }
+.todo-check-row:hover .todo-start,
+.todo-check-row:focus-within .todo-start { opacity: 1; }
+.todo-focus { position: relative; flex-wrap: wrap; box-shadow: inset 3px 0 0 var(--todo-accent, #f2b783); padding-left: 8px; }
+.todo-focus-label { flex-basis: 100%; font-size: 12px; line-height: 16px; letter-spacing: .04em; color: var(--todo-accent, #f2b783); }
+.todo-tag { flex: none; font: 12px/16px Consolas, monospace; font-variant-numeric: tabular-nums; padding: 2px 6px; border-radius: 6px; border: 1px solid currentColor; background: none; color: inherit; opacity: .85; }
+.todo-tag.is-running { color: var(--todo-accent, #f2b783); opacity: 1; }
+.todo-clock-row { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 4px; }
+.todo-clock-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -733,6 +733,7 @@ mod tests {
             warning: Mutex::new(None),
             workers: Mutex::new(vec![]),
             agents: Mutex::new(std::collections::HashMap::new()),
+            undo: Mutex::new(None),
         });
         let started = Instant::now();
         let mut worker = Worker::prepare(core.clone()).unwrap();
@@ -788,6 +789,7 @@ mod tests {
             warning: Mutex::new(None),
             workers: Mutex::new(vec![]),
             agents: Mutex::new(std::collections::HashMap::new()),
+            undo: Mutex::new(None),
         });
         let state = WarmState::default();
         let request = || {
